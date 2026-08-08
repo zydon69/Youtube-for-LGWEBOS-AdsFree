@@ -2,16 +2,22 @@
   YouTube Ad-Free
 </h1>
 <p align="center">
-  <img src="https://img.shields.io/github/stars/webosbrew/youtube-webos?style=flat-square&logo=github" alt="GitHub Stars">
-  <img src="https://img.shields.io/github/v/release/webosbrew/youtube-webos?style=flat-square" alt="Latest Release">
-  <img src="https://img.shields.io/github/contributors/webosbrew/youtube-webos?style=flat-square" alt="Contributors">
-  <img src="https://img.shields.io/github/downloads/webosbrew/youtube-webos/total?style=flat-square" alt="Total Downloads">
+  <img src="https://img.shields.io/github/stars/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square&logo=github" alt="GitHub Stars">
+  <img src="https://img.shields.io/github/v/release/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square" alt="Latest Release">
+  <img src="https://img.shields.io/github/contributors/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square" alt="Contributors">
+  <img src="https://img.shields.io/github/downloads/zydon69/Youtube-for-LGWEBOS-AdsFree/total?style=flat-square" alt="Total Downloads">
   <img src="https://img.shields.io/badge/LG-webOS-000000?logo=webos&logoColor=white&style=flat-square" alt="webOS">
 </p>
 
 <p align="center">
   YouTube app for webOS TV with ad blocking and other enhancements
 </p>
+
+> [!NOTE]
+> This repository is a security- and reliability-hardened fork of
+> [webosbrew/youtube-webos](https://github.com/webosbrew/youtube-webos).
+> GitHub Actions are intentionally disabled; releases must be built and
+> published manually after running the local QA command.
 
 ![Configuration Screen](./screenshots/1_sm.jpg?raw=true)
 ![Segment Skipped](./screenshots/2_sm.jpg?raw=true)
@@ -51,7 +57,7 @@ You can install the app using one of the following methods:
 - **[webOS Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel):**
   App is available in the official webOS Brew repository.
 - **[Device Manager](https://github.com/webosbrew/dev-manager-desktop):**
-  Use a pre-built `.ipk` file from the [Releases](https://github.com/webosbrew/youtube-webos/releases) page.
+  Use a pre-built `.ipk` file from this fork's [Releases](https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree/releases) page.
 - **Command Line (webOS CLI):** Configure the tools [below](#development-setup)
 
 ---
@@ -81,28 +87,33 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
 - The latest **Node.js** LTS release. Refer to `devEngines` in [`package.json`](package.json) for the minimum version.
 - **pnpm**. If you already have `Node.js`, you can have it automatically setup by running `corepack enable`.
 - **git**
+- A trusted webOS CLI available on `PATH` is required only for device setup,
+  deployment, launch, and inspection. Building and packaging do not depend on it.
 
 ### Setup
 
 1. Clone the repository.
 
    ```sh
-   git clone https://github.com/webosbrew/youtube-webos.git
-   cd youtube-webos
+   git clone https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree.git
+   cd Youtube-for-LGWEBOS-AdsFree
    ```
 
 2. Install dependencies.
 
    ```sh
-   pnpm install
+   pnpm install --frozen-lockfile
    ```
 
 ### Building an IPK
 
 ```sh
-pnpm run build:dev
+pnpm run qa
 pnpm run package
 ```
+
+The production QA command runs linting, type checking, automated tests, the
+production build, ES5 compatibility validation, and the dependency audit.
 
 The `.ipk` file will be generated in the project root directory. You can stop here if you're fine with installing the IPK via [the webOS Dev Manager app](https://github.com/webosbrew/dev-manager-desktop). Alternatively, continue below if you want to make it so you can install the IPK on your TV with one command.
 
@@ -120,7 +131,7 @@ The `.ipk` file will be generated in the project root directory. You can stop he
 ### Add the TV to the CLI
 
 ```sh
-pnpm exec ares-setup-device
+ares-setup-device
 ```
 
 Follow the prompts:
@@ -133,7 +144,7 @@ Follow the prompts:
 Verify:
 
 ```sh
-pnpm exec ares-setup-device --list
+ares-setup-device --list
 ```
 
 Sample output:

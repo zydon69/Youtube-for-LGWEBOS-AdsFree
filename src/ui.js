@@ -212,7 +212,10 @@ const eventHandler = (evt) => {
 
     if (evt.type === 'keydown') {
       // Toggle Audio-Only mode.
-      initAudioOnlyToggle();
+      void initAudioOnlyToggle().catch((error) => {
+        console.warn('[audio-only] Unable to toggle mode', error);
+        showNotification('Audio-Only mode unavailable', 2000, 'red');
+      });
     }
     return false;
   }
@@ -362,6 +365,11 @@ async function initAudioOnlyToggle() {
   updateOverlay();
 
   if (overlayObserver) overlayObserver.disconnect();
+  if (!audioOnlyEnabled) {
+    overlayObserver = null;
+    return;
+  }
+
   overlayObserver = new MutationObserver(() => {
     updateOverlay();
     applyAudioOverlayFilter();

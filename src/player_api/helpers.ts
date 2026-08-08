@@ -7,7 +7,8 @@ import type { YTPlayer } from './yt-api';
  */
 export async function requireElement<E extends typeof Element>(
   cssSelectors: string,
-  expected: E
+  expected: E,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<InstanceType<E>> {
   const alreadyPresent = document.querySelector(cssSelectors);
   if (alreadyPresent) {
@@ -22,22 +23,25 @@ export async function requireElement<E extends typeof Element>(
     document.body,
     (node): node is Element =>
       node instanceof Element && node.matches(cssSelectors),
-    true
+    { observeAttributes: true, ...options }
   );
 
   if (!(result instanceof expected)) throw new Error();
   return result as InstanceType<E>;
 }
 
-let player: YTPlayer | null = null;
+let playerPromise: Promise<YTPlayer> | null = null;
 
 export async function getPlayer(): Promise<YTPlayer> {
-  if (player) return player;
+  if (!playerPromise) {
+    playerPromise = requireElement(
+      '.html5-video-player',
+      HTMLElement
+    ) as Promise<YTPlayer>;
+    playerPromise.catch(() => {
+      playerPromise = null;
+    });
+  }
 
-  player = (await requireElement(
-    '.html5-video-player',
-    HTMLElement
-  )) as YTPlayer;
-
-  return player;
+  return playerPromise;
 }

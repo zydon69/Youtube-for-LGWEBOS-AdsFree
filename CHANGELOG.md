@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.4] - 2026/08/08
+
+### Security
+
+- Enforce exact YouTube origins for launch and deep-link URLs.
+- Re-enable webOS CORS validation by disabling `allowCrossDomain`.
+- Remove the bundled third-party webOS CLI and invoke trusted device tooling
+  without a shell.
+- Pin and audit the JavaScript dependency graph with a frozen lockfile.
+
+### Fixed
+
+- Validate launch parameters, stored configuration, SponsorBlock responses,
+  and unstable YouTube command payloads.
+- Compose JSON transformations through a single registry while preserving
+  native `JSON.stringify` behavior.
+- Bound asynchronous polling and clean up timers, network requests, event
+  listeners, and DOM observers.
+- Handle heterogeneous and nested YouTube response renderers safely.
+
+### Changed
+
+- Add an autonomous IPK packager and a complete local QA command.
+- Disable all GitHub Actions workflows; builds and releases are manual.
+- Point active project metadata and documentation to the maintained fork.
+
 ## [0.5.3] - 2026/04/18
 
 ### Fixed

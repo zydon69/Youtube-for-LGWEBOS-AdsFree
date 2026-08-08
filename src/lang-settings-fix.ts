@@ -1,66 +1,68 @@
-// Adapted from https://github.com/reisxd/TizenTube/blob/522f83cc012d5b1c75181b651e084a3afa280323/mods/resolveCommand.js
-
 import {
   ResolveCommandRegistry,
-  type ResolveCommandHook
-} from './app_api/index';
+  type ResolveCommandHook,
+  type ResolveCommandPayload
+} from './app_api';
 
 function getPrefsCookie() {
-  const PREFIX = 'PREF=';
-
-  let str = document.cookie.split('; ').find((x) => x.startsWith(PREFIX));
-  if (!str) return new URLSearchParams();
-
-  str = str.slice(PREFIX.length);
-  return new URLSearchParams(str);
+  const prefix = 'PREF=';
+  const raw = document.cookie
+    .split('; ')
+    .find((value) => value.startsWith(prefix));
+  return new URLSearchParams(raw?.slice(prefix.length) ?? '');
 }
 
-const hook: ResolveCommandHook = function (resolveCommand, payload, extra) {
-  const passthrough = () => {
-    console.warn(
-      `[lang-settings-fix] Passing through due to payload mismatch."`
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isLanguageSetting(value: unknown) {
+  if (!isRecord(value) || !isRecord(value.clientSettingEnum)) return false;
+  return (
+    value.clientSettingEnum.item === 'I18N_LANGUAGE' &&
+    typeof value.stringValue === 'string' &&
+    value.stringValue.length > 0
+  );
+}
+
+export async function installLanguageSettingsFix() {
+  const registry = await ResolveCommandRegistry.getInstance();
+
+  const hook: ResolveCommandHook = (resolveCommand, payload, extra) => {
+    const endpoint = payload.setClientSettingEndpoint;
+    if (!isRecord(endpoint) || !Array.isArray(endpoint.settingDatas)) {
+      return resolveCommand(payload, extra);
+    }
+
+    const languageSetting = endpoint.settingDatas.find(isLanguageSetting);
+    if (!isRecord(languageSetting)) return resolveCommand(payload, extra);
+
+    const prefs = getPrefsCookie();
+    prefs.set('hl', languageSetting.stringValue as string);
+    const expires = new Date();
+    expires.setFullYear(expires.getFullYear() + 10);
+    document.cookie = `PREF=${prefs.toString()}; Domain=.youtube.com; Path=/; Secure; SameSite=Lax; expires=${expires.toUTCString()};`;
+
+    const remainingSettings = endpoint.settingDatas.filter(
+      (setting) => setting !== languageSetting
     );
-    return resolveCommand(payload, extra);
+    if (remainingSettings.length > 0) {
+      const forwardedPayload: ResolveCommandPayload = {
+        ...payload,
+        setClientSettingEndpoint: {
+          ...endpoint,
+          settingDatas: remainingSettings
+        }
+      };
+      resolveCommand(forwardedPayload, extra);
+    }
+
+    return resolveCommand({ signalAction: { signal: 'RELOAD_PAGE' } }, extra);
   };
 
-  if (
-    !payload.setClientSettingEndpoint ||
-    typeof payload.setClientSettingEndpoint !== 'object'
-  )
-    return passthrough();
+  registry.setHook('setClientSettingEndpoint', hook);
+}
 
-  const setClientSettingEndpoint = payload.setClientSettingEndpoint as Record<
-    string,
-    unknown
-  >;
-
-  if (!Array.isArray(setClientSettingEndpoint.settingDatas))
-    return passthrough();
-
-  const idx = setClientSettingEndpoint.settingDatas.findIndex(
-    (setting) => setting.clientSettingEnum?.item === 'I18N_LANGUAGE'
-  );
-
-  if (idx === -1) return resolveCommand(payload, extra);
-
-  const setting = setClientSettingEndpoint.settingDatas[idx];
-
-  const lang = setting.stringValue;
-  const date = new Date();
-  date.setFullYear(date.getFullYear() + 10);
-
-  const prefs = getPrefsCookie();
-  prefs.set('hl', lang);
-  document.cookie = `PREF=${prefs.toString()}; Domain=.youtube.com; expires=${date.toUTCString()};`;
-
-  resolveCommand({
-    signalAction: {
-      signal: 'RELOAD_PAGE'
-    }
-  });
-
-  return true;
-};
-
-const registry = await ResolveCommandRegistry.getInstance();
-registry.setHook('setClientSettingEndpoint', hook);
+void installLanguageSettingsFix().catch((error) => {
+  console.warn('[lang-settings-fix] Feature unavailable', error);
+});

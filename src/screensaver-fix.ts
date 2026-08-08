@@ -43,18 +43,36 @@ const playerCtrlObs = new MutationObserver((mutations, obs) => {
   style.top !== targetTop && (style.top = targetTop);
 });
 
-const bodyAttrObs = new MutationObserver(async () => {
+let syncGeneration = 0;
+
+async function synchronizePlayerObserver() {
+  const generation = ++syncGeneration;
+  playerCtrlObs.disconnect();
   if (!isWatchPage()) return;
 
-  // Youtube TV re-uses the same video element for everything.
-  const video = await requireElement('video', HTMLVideoElement);
-  playerCtrlObs.observe(video, {
-    attributes: true,
-    attributeFilter: ['style']
-  });
+  try {
+    // YouTube TV re-uses the same video element for everything.
+    const video = await requireElement('video', HTMLVideoElement);
+    if (generation !== syncGeneration || !isWatchPage()) return;
+
+    playerCtrlObs.observe(video, {
+      attributes: true,
+      attributeFilter: ['style']
+    });
+  } catch (error) {
+    if (generation === syncGeneration) {
+      console.warn('[screensaver-fix] Video did not become available', error);
+    }
+  }
+}
+
+const bodyAttrObs = new MutationObserver(() => {
+  void synchronizePlayerObserver();
 });
 
 bodyAttrObs.observe(document.body, {
   attributes: true,
   attributeFilter: ['class']
 });
+
+void synchronizePlayerObserver();

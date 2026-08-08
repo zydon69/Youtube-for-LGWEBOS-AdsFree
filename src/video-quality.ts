@@ -1,71 +1,108 @@
-import { configRead } from './config';
+import { configAddChangeListener, configRead } from './config';
 import { getPlayerManager, PlayerMode } from './player_api';
-import type { EventMapOf, PlayerManager, VideoID } from './player_api';
+import type { EventMapOf, PlayerManager } from './player_api';
 import { showNotification } from './ui';
 
-const playerManager = await getPlayerManager();
+type PlayerEventMap = EventMapOf<PlayerManager>;
+
+let intervalToken: number | undefined;
+let timeoutToken: number | undefined;
 
 function shouldForce() {
   return configRead('forceHighResVideo');
 }
 
-type EventMap = EventMapOf<PlayerManager>;
+function clearQualityPolling() {
+  if (intervalToken !== undefined) window.clearInterval(intervalToken);
+  if (timeoutToken !== undefined) window.clearTimeout(timeoutToken);
+  intervalToken = undefined;
+  timeoutToken = undefined;
+}
 
 function getMaxQualityLabel(player: PlayerManager['player']) {
   return player.getAvailableQualityData()[0]?.qualityLabel;
 }
 
-function notifyPlaybackQuality(this: PlayerManager) {
+function notifyPlaybackQuality(manager: PlayerManager) {
   if (!shouldForce()) return;
 
-  const player = this.player;
-
-  const selected = player.getPlaybackQualityLabel();
-  const max = getMaxQualityLabel(player);
-
-  showNotification(`${selected} selected (Max ${max})`, 3000);
-
-  this.removeEventListener('playbackStart', notifyPlaybackQuality);
+  const selected = manager.player.getPlaybackQualityLabel();
+  const max = getMaxQualityLabel(manager.player);
+  showNotification(
+    `${selected || 'Unknown'} selected (Max ${max || 'Unknown'})`,
+    3000
+  );
 }
 
-function setPlaybackQuality(this: PlayerManager, _: unknown) {
+function setPlaybackQuality(this: PlayerManager) {
+  if (!shouldForce()) {
+    this.removeEventListener('playbackStart', setPlaybackQuality);
+    clearQualityPolling();
+    return;
+  }
   if (this.playerMode === PlayerMode.PREVIEW) return;
 
-  console.debug('[video-quality] setting playback quality');
   this.removeEventListener('playbackStart', setPlaybackQuality);
+  clearQualityPolling();
 
-  const prevQuality = this.player.getPlaybackQualityLabel();
+  const previousQuality = this.player.getPlaybackQualityLabel();
   this.player.setPlaybackQualityRange('highres', 'highres');
 
-  if (prevQuality === getMaxQualityLabel(this.player)) {
-    notifyPlaybackQuality.call(this);
+  if (previousQuality && previousQuality === getMaxQualityLabel(this.player)) {
+    notifyPlaybackQuality(this);
     return;
   }
 
-  let timeoutToken: number | undefined;
+  intervalToken = window.setInterval(() => {
+    if (!shouldForce()) {
+      clearQualityPolling();
+      return;
+    }
 
-  // No reliable event for quality change, so poll for it
-  const intervalToken = window.setInterval(() => {
-    const currQuality = this.player.getPlaybackQualityLabel();
-    if (currQuality !== prevQuality) {
-      notifyPlaybackQuality.call(this);
-      clearInterval(intervalToken);
-      clearTimeout(timeoutToken);
+    const currentQuality = this.player.getPlaybackQualityLabel();
+    if (currentQuality && currentQuality !== previousQuality) {
+      clearQualityPolling();
+      notifyPlaybackQuality(this);
     }
   }, 100);
 
   timeoutToken = window.setTimeout(() => {
-    console.warn('[video-quality] timed out waiting for quality change');
-    clearInterval(intervalToken);
-    notifyPlaybackQuality.call(this);
+    clearQualityPolling();
+    notifyPlaybackQuality(this);
   }, 3000);
 }
 
-function handleNewVideo(this: PlayerManager, _: EventMap['newVideo']) {
-  if (!shouldForce()) return;
-
-  this.removeEventListener('playbackStart', setPlaybackQuality);
-  this.addEventListener('playbackStart', setPlaybackQuality);
+function armQualitySelection(manager: PlayerManager) {
+  manager.removeEventListener('playbackStart', setPlaybackQuality);
+  if (shouldForce())
+    manager.addEventListener('playbackStart', setPlaybackQuality);
 }
 
-playerManager.addEventListener('newVideo', handleNewVideo);
+function handleNewVideo(
+  this: PlayerManager,
+  _event: PlayerEventMap['newVideo']
+) {
+  clearQualityPolling();
+  armQualitySelection(this);
+}
+
+async function installVideoQuality() {
+  const manager = await getPlayerManager();
+  manager.addEventListener('newVideo', handleNewVideo);
+  armQualitySelection(manager);
+  if (shouldForce() && manager.currentVideoID) {
+    setPlaybackQuality.call(manager);
+  }
+
+  configAddChangeListener('forceHighResVideo', (event) => {
+    clearQualityPolling();
+    armQualitySelection(manager);
+    if (event.detail.newValue && manager.currentVideoID) {
+      setPlaybackQuality.call(manager);
+    }
+  });
+}
+
+void installVideoQuality().catch((error) => {
+  console.warn('[video-quality] Feature unavailable', error);
+});

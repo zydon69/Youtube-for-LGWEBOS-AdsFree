@@ -13,8 +13,8 @@ document.addEventListener(
 );
 
 import './app_api/index';
+import './hooks/json';
 import './adblock.js';
-import './hooks/json-stringify';
 import './shorts.js';
 import './sponsorblock.js';
 import './ui.js';

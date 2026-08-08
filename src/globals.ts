@@ -2,7 +2,7 @@ export type webOSLaunchParams = Record<string, unknown>;
 
 declare global {
   interface Window {
-    launchParams?: webOSLaunchParams;
+    launchParams?: string | webOSLaunchParams;
     __ytaf_debug__?: boolean;
   }
 

@@ -1,29 +1,40 @@
+import { ResolveCommandRegistry, type ResolveCommandHook } from './app_api';
 import { configRead } from './config';
 
-import { ResolveCommandRegistry, type ResolveCommandHook } from './app_api';
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
-const registry = await ResolveCommandRegistry.getInstance();
+export async function installAutoAccountSelect() {
+  const registry = await ResolveCommandRegistry.getInstance();
 
-const hook: ResolveCommandHook = function (resolveCommand, payload, extra) {
-  if (!configRead('autoAccountSelect')) {
-    resolveCommand(payload, extra);
-    return;
-  }
+  const hook: ResolveCommandHook = (resolveCommand, payload, extra) => {
+    if (!configRead('autoAccountSelect')) {
+      return resolveCommand(payload, extra);
+    }
 
-  const finalEndpoint = payload?.startAccountSelectorCommand // @ts-expect-error TS doesn't allow optional chaining on `unknown`. See: github.com/microsoft/TypeScript/issues/37700
-    ?.nextEndpoint as unknown;
+    const selector = payload.startAccountSelectorCommand;
+    const finalEndpoint = isRecord(selector) ? selector.nextEndpoint : null;
+    if (!isRecord(finalEndpoint)) return resolveCommand(payload, extra);
 
-  registry.dispatchCommand({
-    onIdentityChanged: {
-      identityActionContext: {
-        nextEndpoint: finalEndpoint,
-        eventTrigger: 'ACCOUNT_EVENT_TRIGGER_WHOS_WATCHING',
-        reloadRequired: undefined
+    return registry.dispatchCommand(
+      {
+        onIdentityChanged: {
+          identityActionContext: {
+            nextEndpoint: finalEndpoint,
+            eventTrigger: 'ACCOUNT_EVENT_TRIGGER_WHOS_WATCHING'
+          },
+          isSameIdentity: true
+        },
+        commandMetadata: { webCommandMetadata: { clientAction: true } }
       },
-      isSameIdentity: true
-    },
-    commandMetadata: { webCommandMetadata: { clientAction: true } }
-  });
-};
+      extra
+    );
+  };
 
-registry.setHook('startAccountSelectorCommand', hook);
+  registry.setHook('startAccountSelectorCommand', hook);
+}
+
+void installAutoAccountSelect().catch((error) => {
+  console.warn('[auto-account-select] Feature unavailable', error);
+});

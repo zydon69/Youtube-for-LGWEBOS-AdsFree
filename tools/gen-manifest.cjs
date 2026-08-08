@@ -23,8 +23,8 @@ fs.writeFileSync(
     title: appinfo.title,
     // appDescription: appinfo.appDescription,
     iconUri:
-      'https://raw.githubusercontent.com/webosbrew/youtube-webos/main/assets/largeIcon.png',
-    sourceUrl: 'https://github.com/webosbrew/youtube-webos',
+      'https://raw.githubusercontent.com/zydon69/Youtube-for-LGWEBOS-AdsFree/main/assets/largeIcon.png',
+    sourceUrl: 'https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree',
     rootRequired: false,
     ipkUrl: ipkfile,
     ipkHash: {

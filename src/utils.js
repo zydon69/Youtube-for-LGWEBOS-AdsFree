@@ -1,149 +1,108 @@
-const CONTENT_INTENT_REGEX = /^.+(?=Content)/g;
+import { buildLaunchURL, parseLaunchParams } from './core/launch.js';
 
 export function extractLaunchParams() {
-  if (window.launchParams) {
-    return JSON.parse(window.launchParams);
-  } else {
-    return {};
-  }
-}
-
-function getYTURL() {
-  const ytURL = new URL('https://www.youtube.com/tv#/');
-  ytURL.searchParams.append('env_forceFullAnimation', '1');
-  ytURL.searchParams.append('env_enableWebSpeech', '1');
-  ytURL.searchParams.append('env_enableVoice', '1');
-  return ytURL;
-}
-
-/**
- * Creates a new URLSearchPrams with the contents of `a` and `b`
- * @param {URLSearchParams} a
- * @param {URLSearchParams} b
- * @returns {URLSearchParams}
- */
-function concatSearchParams(a, b) {
-  return new URLSearchParams([...a.entries(), ...b.entries()]);
+  return parseLaunchParams(window.launchParams);
 }
 
 export function handleLaunch(params) {
-  console.info('handleLaunch', params);
-  let ytURL = getYTURL();
+  const target = buildLaunchURL(params);
+  console.info('[launch] Navigating to', target.href);
+  window.location.assign(target.href);
+}
 
-  // We use our custom "target" param, since launches with "contentTarget"
-  // parameter do not respect "handlesRelaunch" appinfo option. We still
-  // fallback to "contentTarget" if our custom param is not specified.
-  //
-  let { target, contentTarget = target } = params;
+function findMatch(root, predicate) {
+  const stack = [root];
 
-  /** TODO: Handle google assistant
-   * Sample: {contentTarget: "v=v=<ID>", storeCaller: "voice", subReason: "voiceAgent", voiceEngine: "googleAssistant"}
-   */
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (predicate(node)) return node;
 
-  switch (typeof contentTarget) {
-    case 'string': {
-      if (contentTarget.indexOf(ytURL.origin) === 0) {
-        console.info('Launching from direct contentTarget');
-        ytURL = contentTarget;
-      } else {
-        // Out of app dial launch with second screen on home: { contentTarget: 'pairingCode=<UUID>&theme=cl&dialLaunch=watch' }
-        console.info('Launching from partial contentTarget');
-        if (contentTarget.indexOf('v=v=') === 0)
-          contentTarget = contentTarget.substring(2);
-
-        ytURL.search = concatSearchParams(
-          ytURL.searchParams,
-          new URLSearchParams(contentTarget)
-        );
-      }
-      break;
-    }
-    case 'object': {
-      console.info('Voice launch');
-
-      const { intent, intentParam } = contentTarget;
-      // Ctrl+F tvhtml5LaunchUrlComponentChanged & REQUEST_ORIGIN_GOOGLE_ASSISTANT in base.js for info
-      const search = ytURL.searchParams;
-      // contentTarget.intent's seen so far: PlayContent, SearchContent
-      const voiceContentIntent = intent
-        .match(CONTENT_INTENT_REGEX)?.[0]
-        ?.toLowerCase();
-
-      search.set('inApp', true);
-      search.set('vs', 9); // Voice System is VOICE_SYSTEM_LG_THINKQ
-      voiceContentIntent && search.set('va', voiceContentIntent);
-
-      // order is important
-      search.append('launch', 'voice');
-      voiceContentIntent === 'search' && search.append('launch', 'search');
-
-      search.set('vq', intentParam);
-      break;
-    }
-    default: {
-      console.info('Default launch');
+    if (!node?.childNodes) continue;
+    for (let index = node.childNodes.length - 1; index >= 0; index--) {
+      stack.push(node.childNodes[index]);
     }
   }
 
-  window.location.href = ytURL.toString();
+  return null;
 }
 
 /**
- * Wait for a child element to be added for which a predicate is true.
+ * Wait for a matching node to appear below a parent.
  *
- * When `observeAttributes` is false, the predicate is checked only when a node
- * is first added. If you want the predicate to run every time an attribute is
- * modified, set `observeAttributes` to true.
  * @template {Node} T
- * @param {Element} parent Root of tree to watch
- * @param {(node: Node) => node is T} predicate Function that checks whether its argument is the desired element
- * @param {boolean} observeAttributes Also run predicate on attribute changes
- * @param {AbortSignal=} abortSignal Signal that can be used to stop waiting
- * @return {Promise<T>} Matched element
+ * @param {Element} parent
+ * @param {(node: Node) => node is T} predicate
+ * @param {{ observeAttributes?: boolean, signal?: AbortSignal, timeoutMs?: number }} [options]
+ * @returns {Promise<T>}
  */
-export async function waitForChildAdd(
-  parent,
-  predicate,
-  observeAttributes,
-  abortSignal
-) {
+export function waitForChildAdd(parent, predicate, options = {}) {
+  const { observeAttributes = false, signal, timeoutMs = 15_000 } = options;
+
   return new Promise((resolve, reject) => {
-    const obs = new MutationObserver((mutations) => {
-      for (const mut of mutations) {
-        switch (mut.type) {
-          case 'attributes': {
-            if (predicate(mut.target)) {
-              obs.disconnect();
-              resolve(mut.target);
-              return;
-            }
-            break;
-          }
-          case 'childList': {
-            for (const node of mut.addedNodes) {
-              if (predicate(node)) {
-                obs.disconnect();
-                resolve(node);
-                return;
-              }
-            }
-            break;
+    let timeoutToken;
+    let settled = false;
+
+    const cleanup = () => {
+      observer.disconnect();
+      if (timeoutToken !== undefined) clearTimeout(timeoutToken);
+      signal?.removeEventListener('abort', handleAbort);
+    };
+
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+
+    const handleAbort = () => {
+      settle(reject, new DOMException('Operation aborted', 'AbortError'));
+    };
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes' && predicate(mutation.target)) {
+          settle(resolve, mutation.target);
+          return;
+        }
+
+        if (mutation.type !== 'childList') continue;
+        for (const addedNode of mutation.addedNodes) {
+          const match = findMatch(addedNode, predicate);
+          if (match) {
+            settle(resolve, match);
+            return;
           }
         }
       }
     });
 
-    if (abortSignal) {
-      abortSignal.addEventListener('abort', () => {
-        obs.disconnect();
-        reject(new Error('aborted'));
-      });
+    if (signal?.aborted) {
+      handleAbort();
+      return;
     }
 
-    obs.observe(parent, {
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    observer.observe(parent, {
       subtree: true,
       attributes: observeAttributes,
       childList: true
     });
+
+    // Close the race between the caller's first lookup and observer installation.
+    const existing = findMatch(parent, predicate);
+    if (existing) {
+      settle(resolve, existing);
+      return;
+    }
+
+    if (Number.isFinite(timeoutMs) && timeoutMs >= 0) {
+      timeoutToken = setTimeout(() => {
+        settle(
+          reject,
+          new Error(`Timed out after ${timeoutMs}ms waiting for a DOM node`)
+        );
+      }, timeoutMs);
+    }
   });
 }

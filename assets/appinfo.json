@@ -1,6 +1,6 @@
 {
   "id": "youtube.leanback.v4",
-  "vendor": "webosbrew.org",
+  "vendor": "zydon69",
   "type": "web",
   "main": "index.html",
   "title": "YouTube AdFree",
@@ -20,7 +20,7 @@
   },
   "vendorExtension": {
     "userAgent": "$browserName$/$browserVersion$ ($platformName$-$platformVersion$), _TV_O18/$firmwareVersion$ (LG, $modelName$, $networkMode$)",
-    "allowCrossDomain": true
+    "allowCrossDomain": false
   },
   "deeplinkingParams": "{\"contentTarget\":\"v=$CONTENTID\"}",
   "inAppSearchParams": "{\"target\":\"q=$SEARCH_KEYWORD\"}",

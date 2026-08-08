@@ -1,11 +1,13 @@
 import { configRead, configAddChangeListener } from './config';
 import './watch.css';
+import { scheduleAlignedInterval } from './core/schedule';
 import { requireElement } from './player_api/helpers';
 
 class Watch {
   #watch;
-  #timer;
+  #stopClock;
   #attrChanges;
+  #destroyed = false;
   #PLAYER_SELECTOR = 'ytlr-watch-default';
 
   constructor() {
@@ -29,14 +31,12 @@ class Watch {
     });
 
     const setTime = () => {
+      if (this.#destroyed) return;
       this.#watch.innerText = formatter.format(new Date());
     };
 
     setTime();
-    setTimeout(() => {
-      setTime();
-      this.#timer = setInterval(setTime, 60000);
-    }, nextSeg);
+    this.#stopClock = scheduleAlignedInterval(setTime, nextSeg, 60_000);
   }
 
   playerAppear(video) {
@@ -50,8 +50,14 @@ class Watch {
   }
 
   async playerEvents() {
-    const player = await requireElement(this.#PLAYER_SELECTOR, HTMLElement);
-    this.playerAppear(player);
+    try {
+      const player = await requireElement(this.#PLAYER_SELECTOR, HTMLElement);
+      if (!this.#destroyed) this.playerAppear(player);
+    } catch (error) {
+      if (!this.#destroyed) {
+        console.warn('[watch] Player did not become available', error);
+      }
+    }
   }
 
   playerObserver(node) {
@@ -66,7 +72,8 @@ class Watch {
   }
 
   destroy() {
-    clearInterval(this.#timer);
+    this.#destroyed = true;
+    this.#stopClock?.();
     this.#watch?.remove();
     this.#attrChanges?.disconnect();
   }

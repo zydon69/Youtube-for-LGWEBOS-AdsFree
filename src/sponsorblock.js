@@ -1,5 +1,9 @@
 import sha256 from 'tiny-sha256';
-import { configRead } from './config';
+import { configAddChangeListener, configRead } from './config';
+import {
+  parseSponsorBlockResponse,
+  SPONSORBLOCK_CATEGORIES
+} from './core/sponsorblock-schema';
 import { showNotification } from './ui';
 
 // Copied from https://github.com/ajayyy/SponsorBlock/blob/9392d16617d2d48abb6125c00e2ff6042cb7bebe/src/config.ts#L179-L233
@@ -58,7 +62,9 @@ class SponsorBlockHandler {
   scheduleSkipHandler = null;
   durationChangeHandler = null;
   segments = null;
-  skippableCategories = [];
+  requestController = null;
+  attachDeadline = 0;
+  sliderDeadline = 0;
 
   constructor(videoID) {
     this.videoID = videoID;
@@ -66,38 +72,59 @@ class SponsorBlockHandler {
 
   async init() {
     const videoHash = sha256(this.videoID).substring(0, 4);
-    const categories = [
-      'sponsor',
-      'intro',
-      'outro',
-      'interaction',
-      'selfpromo',
-      'music_offtopic',
-      'preview'
-    ];
-    const resp = await fetch(
-      `${sponsorblockAPI}/skipSegments/${videoHash}?categories=${encodeURIComponent(
-        JSON.stringify(categories)
-      )}`
-    );
-    const results = await resp.json();
+    const url = `${sponsorblockAPI}/skipSegments/${videoHash}?categories=${encodeURIComponent(
+      JSON.stringify(SPONSORBLOCK_CATEGORIES)
+    )}`;
+    const results = await this.fetchSegments(url);
+    if (!this.active) return;
 
-    const result = results.find((v) => v.videoID === this.videoID);
-    console.debug(this.videoID, 'Got it:', result);
-
-    if (!result || !result.segments || !result.segments.length) {
+    this.segments = parseSponsorBlockResponse(results, this.videoID);
+    if (this.segments.length === 0) {
       console.debug(this.videoID, 'No segments found.');
       return;
     }
 
-    this.segments = result.segments;
-    this.skippableCategories = this.getSkippableCategories();
-
     this.scheduleSkipHandler = () => this.scheduleSkip();
     this.durationChangeHandler = () => this.buildOverlay();
 
+    this.attachDeadline = Date.now() + 15_000;
     this.attachVideo();
     this.buildOverlay();
+  }
+
+  async fetchSegments(url, attempt = 0) {
+    if (!this.active) return [];
+
+    const controller =
+      typeof AbortController === 'function' ? new AbortController() : null;
+    this.requestController = controller;
+    let timeoutToken;
+
+    try {
+      const response = await Promise.race([
+        fetch(url, controller ? { signal: controller.signal } : undefined),
+        new Promise((_, reject) => {
+          timeoutToken = setTimeout(() => {
+            controller?.abort();
+            reject(new Error('SponsorBlock request timed out'));
+          }, 8000);
+        })
+      ]);
+
+      if (!response.ok) {
+        throw new Error(`SponsorBlock returned HTTP ${response.status}`);
+      }
+      return response.json();
+    } catch (error) {
+      if (!this.active) return [];
+      if (attempt >= 2) throw error;
+
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+      return this.fetchSegments(url, attempt + 1);
+    } finally {
+      clearTimeout(timeoutToken);
+      if (this.requestController === controller) this.requestController = null;
+    }
   }
 
   getSkippableCategories() {
@@ -132,6 +159,10 @@ class SponsorBlockHandler {
 
     this.video = document.querySelector('video');
     if (!this.video) {
+      if (Date.now() >= this.attachDeadline) {
+        console.warn(this.videoID, 'Timed out waiting for video element');
+        return;
+      }
       console.debug(this.videoID, 'No video yet...');
       this.attachVideoTimeout = setTimeout(() => this.attachVideo(), 100);
       return;
@@ -188,8 +219,16 @@ class SponsorBlockHandler {
 
     const watchForSlider = () => {
       if (this.sliderInterval) clearInterval(this.sliderInterval);
+      this.sliderDeadline = Date.now() + 15_000;
 
       this.sliderInterval = setInterval(() => {
+        if (Date.now() >= this.sliderDeadline) {
+          clearInterval(this.sliderInterval);
+          this.sliderInterval = null;
+          console.warn(this.videoID, 'Timed out waiting for progress bar');
+          return;
+        }
+
         const nodes = document.querySelectorAll('[idomkey=progress-bar]');
         const last = nodes[nodes.length - 1];
         switch (nodes.length) {
@@ -282,7 +321,7 @@ class SponsorBlockHandler {
           console.debug(this.videoID, 'Currently paused, ignoring...');
           return;
         }
-        if (!this.skippableCategories.includes(segment.category)) {
+        if (!this.getSkippableCategories().includes(segment.category)) {
           console.debug(
             this.videoID,
             'Segment',
@@ -306,6 +345,8 @@ class SponsorBlockHandler {
     console.debug(this.videoID, 'Destroying');
 
     this.active = false;
+    this.requestController?.abort();
+    this.requestController = null;
 
     if (this.nextSkipTimeout) {
       clearTimeout(this.nextSkipTimeout);
@@ -364,42 +405,27 @@ function uninitializeSponsorblock() {
   window.sponsorblock = null;
 }
 
-window.addEventListener(
-  'hashchange',
-  () => {
-    const newURL = new URL(location.hash.substring(1), location.href);
-    // uninitialize sponsorblock when not on `/watch` path, to prevent
-    // it from attaching to playback preview video element loaded on
-    // home page
-    if (newURL.pathname !== '/watch' && window.sponsorblock) {
-      console.debug('uninitializing sponsorblock on a non-video page');
-      uninitializeSponsorblock();
-      return;
-    }
+function synchronizeSponsorBlock() {
+  const currentURL = new URL(location.hash.substring(1), location.href);
+  const videoID = currentURL.searchParams.get('v');
+  const enabled = configRead('enableSponsorBlock');
 
-    const videoID = newURL.searchParams.get('v');
-    const needsReload =
-      videoID &&
-      (!window.sponsorblock || window.sponsorblock.videoID != videoID);
+  if (currentURL.pathname !== '/watch' || !videoID || !enabled) {
+    uninitializeSponsorblock();
+    return;
+  }
 
-    console.debug(
-      'hashchange',
-      videoID,
-      window.sponsorblock,
-      window.sponsorblock ? window.sponsorblock.videoID : null,
-      needsReload
-    );
+  if (window.sponsorblock?.videoID === videoID) return;
+  uninitializeSponsorblock();
 
-    if (needsReload) {
-      uninitializeSponsorblock();
+  const handler = new SponsorBlockHandler(videoID);
+  window.sponsorblock = handler;
+  void handler.init().catch((error) => {
+    console.warn('[sponsorblock] Initialization failed', error);
+    if (window.sponsorblock === handler) uninitializeSponsorblock();
+  });
+}
 
-      if (configRead('enableSponsorBlock')) {
-        window.sponsorblock = new SponsorBlockHandler(videoID);
-        window.sponsorblock.init();
-      } else {
-        console.info('SponsorBlock disabled, not loading');
-      }
-    }
-  },
-  false
-);
+window.addEventListener('hashchange', synchronizeSponsorBlock, false);
+configAddChangeListener('enableSponsorBlock', synchronizeSponsorBlock);
+window.setTimeout(synchronizeSponsorBlock, 0);
