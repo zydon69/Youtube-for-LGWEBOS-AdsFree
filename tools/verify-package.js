@@ -66,6 +66,9 @@ try {
   if (userScript.includes('sponsorblock.inf.re')) {
     throw new Error('Legacy SponsorBlock proxy found in IPK');
   }
+  if (userScript.includes('__ytaf_debug__')) {
+    throw new Error('Production debug instrumentation found in IPK');
+  }
 
   const sha256 = createHash('sha256').update(archive).digest('hex');
   const manifest = JSON.parse(

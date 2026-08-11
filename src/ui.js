@@ -362,6 +362,8 @@ function applyUIFixes() {
 let audioOnlyEnabled = false;
 /** @type {MutationObserver | null} */
 let overlayObserver = null;
+/** @type {number | null} */
+let screenHiddenSyncToken = null;
 /** @type {HTMLVideoElement | null} */
 let audioOnlyVideo = null;
 
@@ -403,6 +405,23 @@ function applyScreenHiddenState() {
   }
 }
 
+function queueScreenHiddenState() {
+  if (!audioOnlyEnabled || screenHiddenSyncToken !== null) return;
+  screenHiddenSyncToken = window.setTimeout(() => {
+    screenHiddenSyncToken = null;
+    applyScreenHiddenState();
+  }, 50);
+}
+
+function stopScreenHiddenObserver() {
+  overlayObserver?.disconnect();
+  overlayObserver = null;
+  if (screenHiddenSyncToken !== null) {
+    window.clearTimeout(screenHiddenSyncToken);
+    screenHiddenSyncToken = null;
+  }
+}
+
 async function initAudioOnlyToggle() {
   if (!audioOnlyEnabled) {
     await Promise.all([
@@ -420,13 +439,12 @@ async function initAudioOnlyToggle() {
     'blue'
   );
 
-  if (overlayObserver) overlayObserver.disconnect();
+  stopScreenHiddenObserver();
   if (!audioOnlyEnabled) {
-    overlayObserver = null;
     return;
   }
 
-  overlayObserver = new MutationObserver(applyScreenHiddenState);
+  overlayObserver = new MutationObserver(queueScreenHiddenState);
 
   overlayObserver.observe(document.body, {
     childList: true,

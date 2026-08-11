@@ -110,9 +110,10 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
 pnpm run package
 ```
 
-The packaging command first runs linting, strict type checking, automated
-tests, the production build, bundle smoke testing, ES5 compatibility validation
-and the dependency audit. Packaging stops on any failure.
+The packaging command first runs linting, strict type checking, coverage-gated
+unit tests, the production build, runtime bundle integration testing, ES5
+compatibility validation and the dependency audit. Packaging stops on any
+failure.
 
 SponsorBlock sends a short hashed video-ID prefix to its external API only when
 the user enables it. See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md)

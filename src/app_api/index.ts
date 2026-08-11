@@ -74,10 +74,6 @@ export class ResolveCommandRegistry {
     command: ResolveCommandPayload,
     extra?: unknown
   ) => {
-    if (window.__ytaf_debug__) {
-      console.debug(`[${this.constructor.name}] Resolving`, { command, extra });
-    }
-
     let payloads = [command];
     for (const key of Object.keys(command)) {
       const hook = this.#cmds.get(key);
@@ -95,14 +91,19 @@ export class ResolveCommandRegistry {
     }
 
     let result;
-    for (const payload of payloads) result = this.#originalFn(payload, extra);
+    for (const payload of payloads) {
+      result = Reflect.apply(this.#originalFn, this.#targetInstance, [
+        payload,
+        extra
+      ]);
+    }
     return result;
   };
 
   private constructor(target: HookTarget) {
     this.#targetName = target.name;
     this.#targetInstance = target.instance;
-    this.#originalFn = target.instance.resolveCommand.bind(target.instance);
+    this.#originalFn = target.instance.resolveCommand;
     target.instance.resolveCommand = this.resolveCommand;
     this.#synchronizationToken = window.setInterval(
       () => this.synchronizeTarget(),
@@ -119,7 +120,7 @@ export class ResolveCommandRegistry {
     }
     this.#targetName = target.name;
     this.#targetInstance = target.instance;
-    this.#originalFn = target.instance.resolveCommand.bind(target.instance);
+    this.#originalFn = target.instance.resolveCommand;
     target.instance.resolveCommand = this.resolveCommand;
   }
 
@@ -146,6 +147,10 @@ export class ResolveCommandRegistry {
     return registry;
   }
 
+  static destroyInstance() {
+    registry?.destroy();
+  }
+
   setHook(command: string, fn: ResolveCommandHook) {
     if (this.#cmds.has(command)) {
       throw new Error(`resolveCommand hook "${command}" already registered`);
@@ -158,7 +163,10 @@ export class ResolveCommandRegistry {
   }
 
   dispatchCommand(payload: ResolveCommandPayload, extra?: unknown) {
-    return this.#originalFn(payload, extra);
+    return Reflect.apply(this.#originalFn, this.#targetInstance, [
+      payload,
+      extra
+    ]);
   }
 
   destroy() {

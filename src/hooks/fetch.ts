@@ -26,52 +26,12 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
   private constructor() {
     super();
 
-    this.#originalFetch = window.fetch.bind(window);
+    this.#originalFetch = window.fetch;
     window.fetch = this.#customFetch;
-  }
-
-  static async #dumpBody(resource: Request | Response) {
-    const MAX_DEBUG_BODY_BYTES = 64 * 1024;
-    if (
-      !resource?.constructor?.name ||
-      !['Request', 'Response'].includes(resource.constructor.name)
-    )
-      return null;
-
-    const blob = await resource.clone().blob();
-    if (!blob.size) return null;
-    if (blob.size > MAX_DEBUG_BODY_BYTES) {
-      return `[body omitted: ${blob.size} bytes]`;
-    }
-
-    const fr = new FileReader();
-
-    const res = new Promise((resolve, reject) => {
-      fr.addEventListener('load', () => {
-        resolve(fr.result);
-      });
-      fr.addEventListener('error', () => reject(fr.error));
-      fr.addEventListener('abort', () =>
-        reject(new Error('Body read aborted'))
-      );
-    });
-
-    fr.readAsDataURL(blob);
-
-    return res;
   }
 
   #customFetch = async (resource: FetchTarget, init?: RequestInit) => {
     const requestID = this.#fetchCount++;
-    if (window.__ytaf_debug__) {
-      console.debug(`Request ${requestID}:`, resource);
-      init && console.debug(`Options  ${requestID}:`, init);
-
-      if (resource instanceof Request) {
-        const reqBody = await FetchRegistry.#dumpBody(resource);
-        reqBody && console.debug(`Request Body ${requestID}:`, reqBody);
-      }
-    }
 
     const url = new URL(
       resource instanceof Request ? resource.url : resource.toString(),
@@ -92,15 +52,10 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
       throw new TypeError('Failed to fetch');
     }
 
-    // @ts-expect-error
-    const res = await this.#originalFetch(resource, init);
-
-    if (window.__ytaf_debug__) {
-      console.debug(`Response ${requestID}:`, res);
-
-      const resBody = await FetchRegistry.#dumpBody(res);
-      resBody && console.debug(`Response Body ${requestID}:`, resBody);
-    }
+    const res = await Reflect.apply(this.#originalFetch, window, [
+      resource,
+      init
+    ] as Parameters<typeof fetch>);
 
     this.dispatchEvent(new TypedCustomEvent('response', { detail: res }));
 

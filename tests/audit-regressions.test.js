@@ -42,6 +42,25 @@ test('invalid launch parameters degrade to an empty object', () => {
   );
 });
 
+test('launch parameters preserve bounded search and voice intents', () => {
+  const partial = buildLaunchURL({ target: 'q=webOS&feature=voice' });
+  assert.equal(partial.origin, 'https://www.youtube.com');
+  assert.equal(partial.searchParams.get('q'), 'webOS');
+  assert.equal(partial.searchParams.get('feature'), 'voice');
+
+  const voice = buildLaunchURL({
+    target: { intent: 'searchContent', intentParam: 'security review' }
+  });
+  assert.equal(voice.searchParams.get('va'), 'search');
+  assert.equal(voice.searchParams.get('vq'), 'security review');
+  assert.deepEqual(voice.searchParams.getAll('launch'), ['voice', 'search']);
+
+  const rejectedVoice = buildLaunchURL({
+    target: { intent: 'deleteContent', intentParam: 'anything' }
+  });
+  assert.equal(rejectedVoice.searchParams.has('launch'), false);
+});
+
 test('playback payload enrichment preserves native JSON semantics', () => {
   const callback = () => undefined;
   const payload = {
@@ -95,6 +114,50 @@ test('ad removal tolerates heterogeneous YouTube shelves', () => {
     contents[1].shelfRenderer.content.horizontalListRenderer.items.length,
     1
   );
+});
+
+test('ad removal covers mastheads, top-level ad fields and reel ads', () => {
+  const response = {
+    adPlacements: [],
+    adSlots: [],
+    playerAds: [],
+    contents: {
+      tvBrowseRenderer: {
+        content: {
+          tvSurfaceContentRenderer: {
+            content: {
+              sectionListRenderer: {
+                contents: [
+                  { tvMastheadRenderer: {} },
+                  { shelfRenderer: { content: { horizontalListRenderer: {} } } }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    entries: [
+      {
+        command: {
+          reelWatchEndpoint: { adClientParams: { isAd: true } }
+        }
+      },
+      { command: { reelWatchEndpoint: { adClientParams: { isAd: false } } } }
+    ]
+  };
+
+  removeAdsFromResponse(response);
+
+  assert.equal('adPlacements' in response, false);
+  assert.equal('adSlots' in response, false);
+  assert.equal('playerAds' in response, false);
+  assert.equal(
+    response.contents.tvBrowseRenderer.content.tvSurfaceContentRenderer.content
+      .sectionListRenderer.contents.length,
+    1
+  );
+  assert.equal(response.entries.length, 1);
 });
 
 test('short and endscreen transformations cover every matching container', () => {

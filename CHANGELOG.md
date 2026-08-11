@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.6] - 2026/08/11
+
+### Security
+
+- Remove production request and response body debug logging.
+- Enforce exact restoration of global fetch and YouTube command hooks.
+
+### Fixed
+
+- Replace document-wide attribute polling with targeted child observation.
+- Debounce Screen-hidden DOM synchronization on resource-constrained TVs.
+- Expand production-bundle tests across fetch blocking, player quality,
+  SponsorBlock opt-in, DOM replacement and lifecycle cleanup.
+
+### Changed
+
+- Remove the duplicate legacy manifest generator.
+
 ## [0.5.5] - 2026/08/11
 
 ### Security

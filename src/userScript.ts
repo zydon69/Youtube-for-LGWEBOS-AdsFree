@@ -30,12 +30,14 @@ import './block-webos-cast';
 import './auto-account-select';
 import { restoreJSONHooks } from './hooks/json';
 import { FetchRegistry } from './hooks';
+import { ResolveCommandRegistry } from './app_api';
 
 window.addEventListener(
   'pagehide',
   () => {
     restoreJSONHooks();
     FetchRegistry.getInstance().dispose();
+    ResolveCommandRegistry.destroyInstance();
   },
   { once: true }
 );

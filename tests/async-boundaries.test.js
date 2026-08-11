@@ -28,6 +28,20 @@ test('polling honors an already-aborted signal', async () => {
   );
 });
 
+test('polling rejects invalid bounds and probe failures', async () => {
+  assert.throws(
+    () => pollUntil(() => true, { initialDelayMs: 10, maxDelayMs: 5 }),
+    RangeError
+  );
+  assert.throws(() => pollUntil(() => true, { timeoutMs: -1 }), RangeError);
+  await assert.rejects(
+    pollUntil(() => {
+      throw new Error('probe failed');
+    }),
+    /probe failed/
+  );
+});
+
 test('DOM waiting finds matches nested in an added subtree', async (context) => {
   const previousObserver = globalThis.MutationObserver;
   let callback;

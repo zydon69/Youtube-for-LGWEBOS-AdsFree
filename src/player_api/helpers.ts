@@ -1,4 +1,4 @@
-import { waitForChildAdd } from '../utils';
+import { waitForChildAdd } from '../utils.js';
 
 import type { YTPlayer } from './yt-api';
 
@@ -19,11 +19,18 @@ export async function requireElement<E extends typeof Element>(
     return alreadyPresent as InstanceType<E>;
   }
 
+  const observationRoot = document.body ?? document.documentElement;
+  if (!observationRoot) {
+    throw new Error(
+      `Cannot observe "${cssSelectors}" before the document exists`
+    );
+  }
+
   const result = await waitForChildAdd(
-    document.body,
+    observationRoot,
     (node): node is Element =>
       node instanceof Element && node.matches(cssSelectors),
-    { observeAttributes: true, ...options }
+    options
   );
 
   if (!(result instanceof expected)) throw new Error();

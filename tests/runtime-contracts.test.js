@@ -56,6 +56,21 @@ test('SponsorBlock client rejects non-retryable and oversized responses', async 
   );
 });
 
+test('SponsorBlock client parses bounded bodies and retries server failures', async () => {
+  let requests = 0;
+  const result = await fetchSponsorBlockJSON(
+    'https://sponsor.ajay.app/api/test',
+    async () => {
+      requests++;
+      if (requests === 1) return new Response('temporary', { status: 503 });
+      return new Response('[{"videoID":"video","segments":[]}]');
+    }
+  );
+
+  assert.equal(requests, 2);
+  assert.deepEqual(result, [{ videoID: 'video', segments: [] }]);
+});
+
 test('SponsorBlock schema caps candidates, duration and duplicates', () => {
   assert.deepEqual(
     parseSponsorBlockResponse(
@@ -88,12 +103,15 @@ test('resolveCommand registry composes hooks and rebinds replaced instances', as
   const firstCalls = [];
   const secondCalls = [];
   function targetConstructor() {}
-  targetConstructor.instance = {
+  const firstInstance = {
     resolveCommand(payload) {
+      assert.equal(this, firstInstance);
       firstCalls.push(payload);
       return payload;
     }
   };
+  const firstOriginal = firstInstance.resolveCommand;
+  targetConstructor.instance = firstInstance;
   globalThis.window = {
     _yttv: { targetConstructor },
     setInterval,
@@ -119,14 +137,19 @@ test('resolveCommand registry composes hooks and rebinds replaced instances', as
     { first: {}, second: {}, firstHandled: true, secondHandled: true }
   ]);
 
-  targetConstructor.instance = {
+  const secondInstance = {
     resolveCommand(payload) {
+      assert.equal(this, secondInstance);
       secondCalls.push(payload);
       return payload;
     }
   };
+  const secondOriginal = secondInstance.resolveCommand;
+  targetConstructor.instance = secondInstance;
   await ResolveCommandRegistry.getInstance();
+  assert.equal(firstInstance.resolveCommand, firstOriginal);
   targetConstructor.instance.resolveCommand({ first: {} });
   assert.deepEqual(secondCalls, [{ first: {}, firstHandled: true }]);
   registry.destroy();
+  assert.equal(secondInstance.resolveCommand, secondOriginal);
 });
