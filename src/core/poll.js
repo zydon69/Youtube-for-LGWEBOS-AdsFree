@@ -15,12 +15,14 @@ export function pollUntil(
   } = {}
 ) {
   /** @param {string} name @param {number} value */
-  const validateDelay = (name, value) => {
-    if (!Number.isFinite(value) || value < 0) {
-      throw new RangeError(`${name} must be a finite non-negative number`);
+  const validateDelay = (name, value, allowZero = false) => {
+    if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
+      throw new RangeError(
+        `${name} must be a finite ${allowZero ? 'non-negative' : 'positive'} number`
+      );
     }
   };
-  validateDelay('timeoutMs', timeoutMs);
+  validateDelay('timeoutMs', timeoutMs, true);
   validateDelay('initialDelayMs', initialDelayMs);
   validateDelay('maxDelayMs', maxDelayMs);
   if (maxDelayMs < initialDelayMs) {

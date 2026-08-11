@@ -8,6 +8,7 @@ import prettierConfig from 'eslint-config-prettier/flat';
 import regexpPlugin from 'eslint-plugin-regexp';
 import globals from 'globals';
 import pkgJson from './package.json' with { type: 'json' };
+import tseslint from 'typescript-eslint';
 
 const defaultSourceType: Linter.SourceType = 'module';
 assert(pkgJson.type === defaultSourceType);
@@ -70,6 +71,39 @@ const configs = [
       'regexp/confusing-quantifier': 'error', // Set to warn in recommended config
       'regexp/no-useless-flag': 'error', // Set to warn in recommended config
       'regexp/optimal-lookaround-quantifier': 'error' // Set to warn in recommended config
+    }
+  },
+
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({
+    ...config,
+    files: ['**/*.ts']
+  })),
+
+  {
+    files: ['**/*.ts'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname
+      }
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          varsIgnorePattern: '^_'
+        }
+      ],
+      '@typescript-eslint/no-base-to-string': 'off',
+      '@typescript-eslint/no-empty-object-type': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off'
     }
   },
 

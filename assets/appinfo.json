@@ -1,6 +1,6 @@
 {
   "id": "youtube.leanback.v4",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "vendor": "zydon69",
   "type": "web",
   "main": "index.html",
@@ -17,7 +17,7 @@
   "support360Content": true,
   "checkUpdateOnLaunch": false,
   "accessibility": {
-    "supportsAudioGuidance": false
+    "supportsAudioGuidance": true
   },
   "vendorExtension": {
     "userAgent": "$browserName$/$browserVersion$ ($platformName$-$platformVersion$), _TV_O18/$firmwareVersion$ (LG, $modelName$, $networkMode$)",

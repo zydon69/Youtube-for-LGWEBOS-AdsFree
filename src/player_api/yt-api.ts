@@ -1,11 +1,13 @@
-export enum PlayerState {
-  UNSTARTED = -1,
-  ENDED = 0,
-  PLAYING = 1,
-  PAUSED = 2,
-  BUFFERING = 3,
-  CUED = 5
-}
+export const PlayerState = Object.freeze({
+  UNSTARTED: -1,
+  ENDED: 0,
+  PLAYING: 1,
+  PAUSED: 2,
+  BUFFERING: 3,
+  CUED: 5
+} as const);
+
+export type PlayerState = (typeof PlayerState)[keyof typeof PlayerState];
 
 interface YTPlayerEventMap extends HTMLElementEventMap {
   onStateChange: PlayerState;

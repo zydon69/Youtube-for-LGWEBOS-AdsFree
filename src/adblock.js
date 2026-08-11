@@ -1,5 +1,6 @@
 import { configRead } from './config';
 import {
+  hasRemovableAds,
   removeAdsFromResponse,
   withInlinePlaybackNoAd
 } from './core/json-transforms';
@@ -8,10 +9,31 @@ import {
   registerJSONStringifyTransformer
 } from './hooks/json';
 
-registerJSONParseTransformer('adblock', removeAdsFromResponse, () =>
-  configRead('enableAdBlock')
-);
+let unregisterParseTransformer = () => false;
+let unregisterStringifyTransformer = () => false;
 
-registerJSONStringifyTransformer('adblock', withInlinePlaybackNoAd, () =>
-  configRead('enableAdBlock')
-);
+try {
+  unregisterParseTransformer = registerJSONParseTransformer(
+    'adblock',
+    removeAdsFromResponse,
+    () => configRead('enableAdBlock'),
+    hasRemovableAds
+  );
+  unregisterStringifyTransformer = registerJSONStringifyTransformer(
+    'adblock',
+    withInlinePlaybackNoAd,
+    () => configRead('enableAdBlock'),
+    (serialized) =>
+      serialized.includes('"playbackContext"') &&
+      serialized.includes('"contentPlaybackContext"')
+  );
+} catch (error) {
+  unregisterStringifyTransformer();
+  unregisterParseTransformer();
+  throw error;
+}
+
+export function dispose() {
+  unregisterStringifyTransformer();
+  unregisterParseTransformer();
+}

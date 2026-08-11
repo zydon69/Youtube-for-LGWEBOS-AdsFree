@@ -1,49 +1,65 @@
 import { ResolveCommandRegistry, type ResolveCommandHook } from './app_api';
-import { configRead } from './config';
+import {
+  configAddChangeListener,
+  configRead,
+  configRemoveChangeListener
+} from './config';
+import { transformAccountSelectorCommand } from './core/account-selection';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+export { transformAccountSelectorCommand } from './core/account-selection';
+
+const hook: ResolveCommandHook = (payload) =>
+  configRead('autoAccountSelect')
+    ? transformAccountSelectorCommand(payload)
+    : payload;
+
+let installedRegistry: ResolveCommandRegistry | null = null;
+let installationGeneration = 0;
 
 export async function installAutoAccountSelect() {
+  const generation = ++installationGeneration;
+  if (installedRegistry) return;
+
   const registry = await ResolveCommandRegistry.getInstance();
-
-  const hook: ResolveCommandHook = (payload) => {
-    if (!configRead('autoAccountSelect')) {
-      return payload;
-    }
-
-    const selector = payload.startAccountSelectorCommand;
-    const finalEndpoint = isRecord(selector) ? selector.nextEndpoint : null;
-    if (!isRecord(finalEndpoint)) return payload;
-
-    const remainingPayload = { ...payload };
-    delete remainingPayload.startAccountSelectorCommand;
-    const commandMetadata = isRecord(payload.commandMetadata)
-      ? payload.commandMetadata
-      : {};
-    const webCommandMetadata = isRecord(commandMetadata.webCommandMetadata)
-      ? commandMetadata.webCommandMetadata
-      : {};
-    return {
-      ...remainingPayload,
-      onIdentityChanged: {
-        identityActionContext: {
-          nextEndpoint: finalEndpoint,
-          eventTrigger: 'ACCOUNT_EVENT_TRIGGER_WHOS_WATCHING'
-        },
-        isSameIdentity: true
-      },
-      commandMetadata: {
-        ...commandMetadata,
-        webCommandMetadata: { ...webCommandMetadata, clientAction: true }
-      }
-    };
-  };
-
+  if (
+    generation !== installationGeneration ||
+    !configRead('autoAccountSelect')
+  ) {
+    return;
+  }
   registry.setHook('startAccountSelectorCommand', hook);
+  installedRegistry = registry;
 }
 
-void installAutoAccountSelect().catch((error) => {
-  console.warn('[auto-account-select] Feature unavailable', error);
-});
+export function disposeAutoAccountSelect() {
+  installationGeneration++;
+  installedRegistry?.removeHook('startAccountSelectorCommand');
+  installedRegistry = null;
+}
+
+function synchronizeAutoAccountSelect(enabled: boolean) {
+  if (!enabled) {
+    disposeAutoAccountSelect();
+    return;
+  }
+  void installAutoAccountSelect().catch((error) => {
+    console.warn('[auto-account-select] Feature unavailable', error);
+  });
+}
+
+const handleConfigChange = (event: CustomEvent<{ newValue: boolean }>) => {
+  synchronizeAutoAccountSelect(event.detail.newValue);
+};
+
+try {
+  configAddChangeListener('autoAccountSelect', handleConfigChange);
+  synchronizeAutoAccountSelect(configRead('autoAccountSelect'));
+} catch (error) {
+  dispose();
+  throw error;
+}
+
+export function dispose() {
+  configRemoveChangeListener('autoAccountSelect', handleConfigChange);
+  disposeAutoAccountSelect();
+}

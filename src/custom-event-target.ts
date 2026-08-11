@@ -80,6 +80,12 @@ export class CustomEventTarget<
     if (index >= 0) listeners.splice(index, 1);
   }
 
+  clearEventListeners() {
+    for (const type of Object.keys(this.#listeners) as Array<keyof T>) {
+      delete this.#listeners[type];
+    }
+  }
+
   dispatchEvent<K extends keyof T & string>(event: T[K]) {
     const listeners = [...(this.#listeners[event.type as K] ?? [])];
     const mutableEvent = event as T[K] & EventLike;
@@ -87,8 +93,14 @@ export class CustomEventTarget<
 
     try {
       for (const listener of listeners) {
-        if (typeof listener === 'function') listener.call(this, event);
-        else listener?.handleEvent(mutableEvent);
+        try {
+          if (typeof listener === 'function') listener.call(this, event);
+          else listener?.handleEvent(mutableEvent);
+        } catch (error) {
+          // Match EventTarget: report the failure, continue dispatching, and do
+          // not turn an observer failure into a caller failure.
+          console.error('[events] Unhandled listener error', error);
+        }
       }
     } finally {
       mutableEvent.currentTarget = null;

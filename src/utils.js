@@ -1,13 +1,17 @@
 import { buildLaunchURL, parseLaunchParams } from './core/launch.js';
 
 export function extractLaunchParams() {
-  return parseLaunchParams(window.launchParams);
+  try {
+    return parseLaunchParams(window.launchParams);
+  } catch (error) {
+    console.warn('[launch] Unable to read launch parameters', error);
+    return {};
+  }
 }
 
 /** @param {unknown} params */
 export function handleLaunch(params) {
   const target = buildLaunchURL(params);
-  console.info('[launch] Navigating to', target.href);
   window.location.assign(target.href);
 }
 
@@ -66,24 +70,48 @@ export function waitForChildAdd(parent, predicate, options = {}) {
     };
 
     const handleAbort = () => {
-      settle(reject, new DOMException('Operation aborted', 'AbortError'));
+      let error;
+      try {
+        error = new DOMException('Operation aborted', 'AbortError');
+      } catch {
+        error = new Error('Operation aborted');
+        error.name = 'AbortError';
+      }
+      settle(reject, error);
     };
 
     const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === 'attributes' && predicate(mutation.target)) {
-          settle(resolve, mutation.target);
-          return;
-        }
-
-        if (mutation.type !== 'childList') continue;
-        for (const addedNode of mutation.addedNodes) {
-          const match = findMatch(addedNode, predicate);
-          if (match) {
-            settle(resolve, match);
+      if (settled) return;
+      try {
+        for (
+          let mutationIndex = 0;
+          mutationIndex < mutations.length;
+          mutationIndex++
+        ) {
+          const mutation = mutations[mutationIndex];
+          if (!mutation) continue;
+          if (mutation.type === 'attributes' && predicate(mutation.target)) {
+            settle(resolve, mutation.target);
             return;
           }
+
+          if (mutation.type !== 'childList') continue;
+          for (
+            let nodeIndex = 0;
+            nodeIndex < mutation.addedNodes.length;
+            nodeIndex++
+          ) {
+            const addedNode = mutation.addedNodes[nodeIndex];
+            if (!addedNode) continue;
+            const match = findMatch(addedNode, predicate);
+            if (match) {
+              settle(resolve, match);
+              return;
+            }
+          }
         }
+      } catch (error) {
+        settle(reject, error);
       }
     });
 
@@ -105,9 +133,14 @@ export function waitForChildAdd(parent, predicate, options = {}) {
     }
 
     // Close the race between the caller's first lookup and observer installation.
-    const existing = findMatch(parent, predicate);
-    if (existing) {
-      settle(resolve, existing);
+    try {
+      const existing = findMatch(parent, predicate);
+      if (existing) {
+        settle(resolve, existing);
+        return;
+      }
+    } catch (error) {
+      settle(reject, error);
       return;
     }
 

@@ -33,6 +33,69 @@ function removeAdSlots(sectionListRenderer) {
   }
 }
 
+/** @param {Record<string, any> | null} sectionListRenderer */
+function sectionListHasAds(sectionListRenderer) {
+  if (
+    !isRecord(sectionListRenderer) ||
+    !Array.isArray(sectionListRenderer.contents)
+  ) {
+    return false;
+  }
+  for (const entry of sectionListRenderer.contents) {
+    if (isRecord(entry) && isRecord(entry.adSlotRenderer)) return true;
+    const shelf = getRecord(entry, 'shelfRenderer');
+    const content = getRecord(shelf, 'content');
+    const horizontalList = getRecord(content, 'horizontalListRenderer');
+    if (!horizontalList || !Array.isArray(horizontalList.items)) continue;
+    for (const item of horizontalList.items) {
+      if (isRecord(item) && isRecord(item.adSlotRenderer)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Cheap applicability guard used before allocating a transactional clone.
+ * @param {unknown} value
+ */
+export function hasRemovableAds(value) {
+  if (!isRecord(value)) return false;
+  if (
+    Object.hasOwn(value, 'adPlacements') ||
+    Object.hasOwn(value, 'adSlots') ||
+    Object.hasOwn(value, 'playerAds')
+  ) {
+    return true;
+  }
+
+  const contents = getRecord(value, 'contents');
+  const tvBrowse = getRecord(contents, 'tvBrowseRenderer');
+  const tvBrowseContent = getRecord(tvBrowse, 'content');
+  const surface = getRecord(tvBrowseContent, 'tvSurfaceContentRenderer');
+  const surfaceContent = getRecord(surface, 'content');
+  const homeSections = getRecord(surfaceContent, 'sectionListRenderer');
+  if (homeSections && Array.isArray(homeSections.contents)) {
+    for (const entry of homeSections.contents) {
+      if (isRecord(entry) && isRecord(entry.tvMastheadRenderer)) return true;
+    }
+  }
+  if (
+    sectionListHasAds(homeSections) ||
+    sectionListHasAds(getRecord(contents, 'sectionListRenderer'))
+  ) {
+    return true;
+  }
+
+  if (!Array.isArray(value.entries)) return false;
+  for (const entry of value.entries) {
+    const command = getRecord(entry, 'command');
+    const reel = getRecord(command, 'reelWatchEndpoint');
+    const adParams = getRecord(reel, 'adClientParams');
+    if (adParams?.isAd === true) return true;
+  }
+  return false;
+}
+
 /** @param {any} value */
 export function removeAdsFromResponse(value) {
   if (!isRecord(value)) return value;
@@ -71,20 +134,20 @@ export function removeAdsFromResponse(value) {
 
 /**
  * @param {any} root
- * @param {(record: Record<string, any>) => void} visitor
+ * @param {(record: Record<string, any>) => boolean} visitor
  */
-function walkRecords(root, visitor) {
-  if (!isRecord(root) && !Array.isArray(root)) return;
+function someRecord(root, visitor) {
+  if (!isRecord(root) && !Array.isArray(root)) return false;
 
-  const stack = [{ value: root, depth: 0 }];
+  const stack = [root];
   const visited = new Set();
-  const MAX_VISITED_NODES = 50_000;
-  const MAX_DEPTH = 100;
 
-  while (stack.length > 0 && visited.size < MAX_VISITED_NODES) {
-    const next = stack.pop();
-    if (!next) break;
-    const { value: current, depth } = next;
+  // JSON.parse has already paid the allocation cost for every node. Walking
+  // the complete graph iteratively avoids both recursive stack exhaustion and
+  // the former silent 50k/depth cut-off that left matching payloads untouched.
+  // `visited` also keeps direct callers safe when they pass cyclic objects.
+  while (stack.length > 0) {
+    const current = stack.pop();
     if (
       (!isRecord(current) && !Array.isArray(current)) ||
       visited.has(current)
@@ -93,15 +156,61 @@ function walkRecords(root, visitor) {
     }
 
     visited.add(current);
-    if (isRecord(current)) visitor(current);
+    if (isRecord(current) && visitor(current)) return true;
 
-    if (depth >= MAX_DEPTH) continue;
     for (const child of Object.values(current)) {
       if (isRecord(child) || Array.isArray(child)) {
-        stack.push({ value: child, depth: depth + 1 });
+        stack.push(child);
       }
     }
   }
+  return false;
+}
+
+/**
+ * @param {any} root
+ * @param {(record: Record<string, any>) => void} visitor
+ */
+function walkRecords(root, visitor) {
+  someRecord(root, (record) => {
+    visitor(record);
+    return false;
+  });
+}
+
+/** @param {unknown} value */
+export function hasRemovableShorts(value) {
+  return someRecord(value, (record) => {
+    for (const key of ['gridRenderer', 'gridContinuation']) {
+      const container = getRecord(record, key);
+      if (!container || !Array.isArray(container.items)) continue;
+      for (const item of container.items) {
+        const tile = getRecord(item, 'tileRenderer');
+        const command = getRecord(tile, 'onSelectCommand');
+        if (getRecord(command, 'reelWatchEndpoint')) return true;
+      }
+    }
+
+    const sectionList = getRecord(record, 'sectionListRenderer');
+    if (!sectionList || !Array.isArray(sectionList.contents)) return false;
+    for (const item of sectionList.contents) {
+      const shelf = getRecord(item, 'shelfRenderer');
+      if (
+        shelf?.tvhtml5ShelfRendererType === 'TVHTML5_SHELF_RENDERER_TYPE_SHORTS'
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+/** @param {unknown} value */
+export function hasRemovableEndscreen(value) {
+  return someRecord(value, (record) => {
+    const endscreen = getRecord(record, 'endscreen');
+    return Boolean(endscreen && isRecord(endscreen.endscreenRenderer));
+  });
 }
 
 /** @param {any} value */

@@ -1,13 +1,34 @@
 # Release procedure
 
-1. Start from a clean, reviewed commit on `main`.
-2. Run `pnpm install --frozen-lockfile`.
-3. Run `pnpm qa`.
-4. Run `pnpm package`.
-5. Run `pnpm verify:package`.
-6. Install the generated IPK on every supported webOS engine family.
-7. Sign the Git tag and publish the IPK, manifest, `sbom.cdx.json`, checksum
-   and `THIRD_PARTY_NOTICES.md` together.
+1. Provision Node.js 24 and pnpm 10.33.0 independently. The repository must
+   never download or install its own Node.js runtime.
+2. Start from a clean, reviewed commit on `main`, fetch the intended remote,
+   and verify that `git status --short` is empty.
+3. Run `pnpm install --frozen-lockfile`.
+4. Run `pnpm package`. It runs the complete QA gate, creates the SBOM and
+   package, and independently rebuilds and verifies every release artifact.
+5. Inspect the QA output and SBOM, then install the verified IPK on every
+   supported webOS engine family.
+6. Sign and verify the Git tag that names the release commit.
+7. Sign the generated `youtube.leanback.v4_<version>_all.sha256` file with an
+   externally managed maintainer key.
+8. Publish the IPK, `youtube.leanback.v4.manifest.json`, `sbom.cdx.json`,
+   provenance statement, checksum index, checksum signature and
+   `THIRD_PARTY_NOTICES.md` together. Verify the uploaded bytes again.
 
 Never publish an IPK copied from an older `dist` directory. A release is
-blocked if a high-severity scanner, compatibility test or device test fails.
+blocked if a high-severity scanner, source policy, compatibility test or device
+test fails. The local policy is a deterministic baseline, not a substitute for
+reviewing release diffs or running independent SAST and secret scanners.
+
+The generated in-toto/SLSA statement is an unsigned local attestation. Its
+subjects and the checksum index cryptographically bind the IPK, manifest and
+SBOM to one another and to the recorded source tree, but they do not prove the
+publisher's identity. Authenticating the publisher requires the external key
+in step 7 (for example GPG, SSH signing, Sigstore/cosign, or an equivalent
+organization-managed service). The private key must never be stored in this
+repository.
+
+`pnpm package:dev` and `pnpm verify:package:dev` are only for local validation
+of an intentionally dirty worktree. Their metadata records `development` and
+`dirty: true`; these artifacts are not release candidates.

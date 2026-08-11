@@ -5,6 +5,8 @@
 //
 
 (function (global) {
+	if (typeof global.DOMRect === 'function') return;
+
 	function number(v) {
 		return v === undefined ? 0 : Number(v);
 	}
@@ -25,6 +27,7 @@
 			x: {
 				get: function () { return x; },
 				set: function (newX) {
+					newX = number(newX);
 					if (different(x, newX)) {
 						x = newX;
 						left = right = undefined;
@@ -35,6 +38,7 @@
 			y: {
 				get: function () { return y; },
 				set: function (newY) {
+					newY = number(newY);
 					if (different(y, newY)) {
 						y = newY;
 						top = bottom = undefined;
@@ -45,6 +49,7 @@
 			width: {
 				get: function () { return width; },
 				set: function (newWidth) {
+					newWidth = number(newWidth);
 					if (different(width, newWidth)) {
 						width = newWidth;
 						left = right = undefined;
@@ -55,6 +60,7 @@
 			height: {
 				get: function () { return height; },
 				set: function (newHeight) {
+					newHeight = number(newHeight);
 					if (different(height, newHeight)) {
 						height = newHeight;
 						top = bottom = undefined;
@@ -100,6 +106,32 @@
 			}
 		});
 	}
+
+	Object.defineProperty(DOMRect.prototype, 'toJSON', {
+		value: function () {
+			return {
+				x: this.x,
+				y: this.y,
+				width: this.width,
+				height: this.height,
+				top: this.top,
+				right: this.right,
+				bottom: this.bottom,
+				left: this.left
+			};
+		},
+		configurable: true,
+		writable: true
+	});
+
+	Object.defineProperty(DOMRect, 'fromRect', {
+		value: function (rect) {
+			rect = rect || {};
+			return new DOMRect(rect.x, rect.y, rect.width, rect.height);
+		},
+		configurable: true,
+		writable: true
+	});
 	
 	global.DOMRect = DOMRect;
 }(self));

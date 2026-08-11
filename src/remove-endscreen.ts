@@ -1,7 +1,17 @@
 import { configRead } from './config';
-import { removeEndscreenFromResponse } from './core/json-transforms';
+import {
+  hasRemovableEndscreen,
+  removeEndscreenFromResponse
+} from './core/json-transforms';
 import { registerJSONParseTransformer } from './hooks/json';
 
-registerJSONParseTransformer('endscreen', removeEndscreenFromResponse, () =>
-  configRead('removeEndscreen')
+const unregisterTransformer = registerJSONParseTransformer(
+  'endscreen',
+  removeEndscreenFromResponse,
+  () => configRead('removeEndscreen'),
+  hasRemovableEndscreen
 );
+
+export function dispose() {
+  unregisterTransformer();
+}

@@ -1,132 +1,70 @@
-import { configAddChangeListener, configRead } from './config';
+import {
+  configAddChangeListener,
+  configRead,
+  configRemoveChangeListener
+} from './config';
+import { VideoQualityController } from './core/video-quality-controller';
 import { getPlayerManager, PlayerMode } from './player_api';
 import type { EventMapOf, PlayerManager } from './player_api';
 import { showNotification } from './ui';
 
 type PlayerEventMap = EventMapOf<PlayerManager>;
 
-let intervalToken: number | undefined;
-let timeoutToken: number | undefined;
+let controller: VideoQualityController | null = null;
+let manager: PlayerManager | null = null;
+let installationGeneration = 0;
 
-function shouldForce() {
-  return configRead('forceHighResVideo');
-}
+const handleNewVideo = (_event: PlayerEventMap['newVideo']) => {
+  controller?.handleNewVideo();
+};
+const handlePlaybackStart = (_event: PlayerEventMap['playbackStart']) => {
+  controller?.handlePlaybackStart();
+};
+const handleConfigChange = (event: CustomEvent<{ newValue: boolean }>) => {
+  controller?.setEnabled(event.detail.newValue);
+};
 
-function clearQualityPolling() {
-  if (intervalToken !== undefined) window.clearInterval(intervalToken);
-  if (timeoutToken !== undefined) window.clearTimeout(timeoutToken);
-  intervalToken = undefined;
-  timeoutToken = undefined;
-}
+export async function installVideoQuality() {
+  if (controller) return;
+  const generation = ++installationGeneration;
+  const nextManager = await getPlayerManager();
+  if (generation !== installationGeneration) return;
 
-function getMaxQualityLabel(player: PlayerManager['player']) {
-  return player
-    .getAvailableQualityData()
-    .filter(({ isPlayable, qualityLabel }) => isPlayable && qualityLabel)
-    .sort(
-      (left, right) =>
-        qualityRank(right.qualityLabel) - qualityRank(left.qualityLabel)
-    )[0]?.qualityLabel;
-}
-
-function qualityRank(label: string) {
-  const verticalPixels = Number(label.match(/\d+/)?.[0] ?? 0);
-  return verticalPixels + (/\b4k\b/i.test(label) ? 2160 : 0);
-}
-
-function restoreAutomaticQuality(manager: PlayerManager) {
-  try {
-    manager.player.setPlaybackQualityRange('auto', 'auto');
-  } catch (error) {
-    console.warn('[video-quality] Unable to restore automatic quality', error);
-  }
-}
-
-function notifyPlaybackQuality(manager: PlayerManager) {
-  if (!shouldForce()) return;
-
-  const selected = manager.player.getPlaybackQualityLabel();
-  const max = getMaxQualityLabel(manager.player);
-  showNotification(
-    `${selected || 'Unknown'} selected (Max ${max || 'Unknown'})`,
-    3000
+  const nextController = new VideoQualityController(
+    {
+      getPlayer: () => nextManager.player,
+      getVideoID: () => nextManager.currentVideoID,
+      isPreview: () => nextManager.playerMode === PlayerMode.PREVIEW
+    },
+    { notify: showNotification }
   );
-}
 
-function setPlaybackQuality(this: PlayerManager) {
-  if (!shouldForce()) {
-    this.removeEventListener('playbackStart', setPlaybackQuality);
-    clearQualityPolling();
-    return;
+  try {
+    nextManager.addEventListener('newVideo', handleNewVideo);
+    nextManager.addEventListener('playbackStart', handlePlaybackStart);
+    configAddChangeListener('forceHighResVideo', handleConfigChange);
+    manager = nextManager;
+    controller = nextController;
+    nextController.setEnabled(configRead('forceHighResVideo'));
+  } catch (error) {
+    nextManager.removeEventListener('newVideo', handleNewVideo);
+    nextManager.removeEventListener('playbackStart', handlePlaybackStart);
+    configRemoveChangeListener('forceHighResVideo', handleConfigChange);
+    nextController.dispose();
+    manager = null;
+    controller = null;
+    throw error;
   }
-  if (this.playerMode === PlayerMode.PREVIEW) return;
-
-  this.removeEventListener('playbackStart', setPlaybackQuality);
-  clearQualityPolling();
-
-  const previousQuality = this.player.getPlaybackQualityLabel();
-  this.player.setPlaybackQualityRange('highres', 'highres');
-
-  if (previousQuality && previousQuality === getMaxQualityLabel(this.player)) {
-    notifyPlaybackQuality(this);
-    return;
-  }
-
-  intervalToken = window.setInterval(() => {
-    if (!shouldForce()) {
-      clearQualityPolling();
-      return;
-    }
-
-    try {
-      const currentQuality = this.player.getPlaybackQualityLabel();
-      if (currentQuality && currentQuality !== previousQuality) {
-        clearQualityPolling();
-        notifyPlaybackQuality(this);
-      }
-    } catch (error) {
-      clearQualityPolling();
-      console.warn('[video-quality] Quality polling failed', error);
-    }
-  }, 100);
-
-  timeoutToken = window.setTimeout(() => {
-    clearQualityPolling();
-    notifyPlaybackQuality(this);
-  }, 3000);
 }
 
-function armQualitySelection(manager: PlayerManager) {
-  manager.removeEventListener('playbackStart', setPlaybackQuality);
-  if (shouldForce())
-    manager.addEventListener('playbackStart', setPlaybackQuality);
-}
-
-function handleNewVideo(
-  this: PlayerManager,
-  _event: PlayerEventMap['newVideo']
-) {
-  clearQualityPolling();
-  armQualitySelection(this);
-}
-
-async function installVideoQuality() {
-  const manager = await getPlayerManager();
-  manager.addEventListener('newVideo', handleNewVideo);
-  armQualitySelection(manager);
-  if (shouldForce() && manager.currentVideoID) {
-    setPlaybackQuality.call(manager);
-  }
-
-  configAddChangeListener('forceHighResVideo', (event) => {
-    clearQualityPolling();
-    armQualitySelection(manager);
-    if (event.detail.newValue && manager.currentVideoID) {
-      setPlaybackQuality.call(manager);
-    } else if (!event.detail.newValue) {
-      restoreAutomaticQuality(manager);
-    }
-  });
+export function dispose() {
+  installationGeneration++;
+  manager?.removeEventListener('newVideo', handleNewVideo);
+  manager?.removeEventListener('playbackStart', handlePlaybackStart);
+  configRemoveChangeListener('forceHighResVideo', handleConfigChange);
+  controller?.dispose();
+  controller = null;
+  manager = null;
 }
 
 void installVideoQuality().catch((error) => {

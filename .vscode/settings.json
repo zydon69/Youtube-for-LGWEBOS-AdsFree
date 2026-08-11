@@ -4,5 +4,5 @@
   "prettier.useEditorConfig": true,
   "editor.formatOnSave": true,
   "prettier.ignorePath": ".prettierignore",
-  "typescript.tsdk": "node_modules\\typescript\\lib"
+  "typescript.tsdk": "node_modules/typescript/lib"
 }

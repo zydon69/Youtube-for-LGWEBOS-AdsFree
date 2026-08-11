@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.7] - 2026/08/11
+
+### Security
+
+- Preserve native JSON reviver, replacer, getter and `toJSON` semantics.
+- Stream and cap SponsorBlock responses, cancel obsolete requests, validate
+  video IDs and query only enabled categories.
+- Add source-origin, dangerous-API and committed-secret policy checks.
+- Package the GPL license and verify the complete IPK/archive structure.
+
+### Fixed
+
+- Prevent SponsorBlock backward-seek loops and correlate skips with the active
+  YouTube player.
+- Restore all feature-owned inline styles and upgraded thumbnails exactly.
+- Keep hooks alive across bfcache restores and cancel late registry installs.
+- Continue event dispatch after a failing listener and serialize screen-hidden
+  mode transitions.
+- Preserve native DOMRect, restore audio-guidance metadata and reset destroyed
+  player-manager singletons.
+
+### Changed
+
+- Share body-subtree mutation observation between features.
+- Pin development to Node.js 24 LTS and add real-browser Playwright coverage.
+- Enrich the CycloneDX SBOM with licenses, dependency edges and vendored hashes.
+
 ## [0.5.6] - 2026/08/11
 
 ### Security
