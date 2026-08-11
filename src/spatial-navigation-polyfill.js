@@ -29,6 +29,52 @@
   let savedSearchOrigin = {element: null, rect: null};  // Saves previous search origin
   let searchOriginRect = null;  // Rect of current search origin
 
+  function defineElementAPI(name, implementation) {
+    if (typeof window.Element.prototype[name] === 'function') return;
+    Object.defineProperty(window.Element.prototype, name, {
+      configurable: true,
+      enumerable: false,
+      writable: true,
+      value: implementation
+    });
+  }
+
+  function getConfiguredKeyMode() {
+    // Accessing parent globals may throw for a cross-origin embedding context.
+    try {
+      if (window.parent && window.parent.__spatialNavigation__) {
+        return window.parent.__spatialNavigation__.keyMode;
+      }
+    } catch (_) {
+      // The local configuration remains authoritative when the parent is not
+      // accessible.
+    }
+    return window.__spatialNavigation__ && window.__spatialNavigation__.keyMode;
+  }
+
+  function createNavigationEvent(type, detail) {
+    if (typeof window.CustomEvent === 'function') {
+      return new window.CustomEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        detail
+      });
+    }
+    let event = document.createEvent('CustomEvent');
+    if (typeof event.initCustomEvent === 'function') {
+      event.initCustomEvent(type, true, true, detail);
+      return event;
+    }
+    event = document.createEvent('Event');
+    event.initEvent(type, true, true);
+    Object.defineProperty(event, 'detail', {
+      configurable: true,
+      enumerable: true,
+      value: detail
+    });
+    return event;
+  }
+
   /**
    * Initiate the spatial navigation features of the polyfill.
    * @function initiateSpatialNavigation
@@ -38,17 +84,17 @@
      * Bind the standards APIs to be exposed to the window object for authors
      */
     window.navigate = navigate;
-    window.Element.prototype.spatialNavigationSearch = spatialNavigationSearch;
-    window.Element.prototype.focusableAreas = focusableAreas;
-    window.Element.prototype.getSpatialNavigationContainer = getSpatialNavigationContainer;
+    defineElementAPI('spatialNavigationSearch', spatialNavigationSearch);
+    defineElementAPI('focusableAreas', focusableAreas);
+    defineElementAPI('getSpatialNavigationContainer', getSpatialNavigationContainer);
 
     /*
      * CSS.registerProperty() from the Properties and Values API
      * Reference: https://drafts.css-houdini.org/css-properties-values-api/#the-registerproperty-function
      */
-    if (window.CSS && CSS.registerProperty) {
+    if (window.CSS && window.CSS.registerProperty) {
       if (window.getComputedStyle(document.documentElement).getPropertyValue('--spatial-navigation-contain') === '') {
-        CSS.registerProperty({
+        window.CSS.registerProperty({
           name: '--spatial-navigation-contain',
           syntax: 'auto | contain',
           inherits: false,
@@ -57,7 +103,7 @@
       }
 
       if (window.getComputedStyle(document.documentElement).getPropertyValue('--spatial-navigation-action') === '') {
-        CSS.registerProperty({
+        window.CSS.registerProperty({
           name: '--spatial-navigation-action',
           syntax: 'auto | focus | scroll',
           inherits: false,
@@ -66,7 +112,7 @@
       }
 
       if (window.getComputedStyle(document.documentElement).getPropertyValue('--spatial-navigation-function') === '') {
-        CSS.registerProperty({
+        window.CSS.registerProperty({
           name: '--spatial-navigation-function',
           syntax: 'normal | grid',
           inherits: false,
@@ -88,7 +134,7 @@
      */
     window.addEventListener('keydown', (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const currentKeyMode = (parent && parent.__spatialNavigation__.keyMode) || window.__spatialNavigation__.keyMode;
+      const currentKeyMode = getConfiguredKeyMode();
       const eventTarget = document.activeElement;
       const dir = ARROW_KEY_CODE[e.keyCode];
 
@@ -659,7 +705,7 @@
         causedTarget: currentElement,
         dir: direction
       };
-      const triggeredEvent = new CustomEvent('nav' + eventType, {bubbles: true, cancelable: true, detail: data});
+      const triggeredEvent = createNavigationEvent('nav' + eventType, data);
       return containerElement.dispatchEvent(triggeredEvent);
     }
   }
@@ -1745,7 +1791,9 @@
       enableExperimentalAPIs,
       get keyMode() { return this._keymode ? this._keymode : 'ARROW'; },
       set keyMode(mode) { this._keymode = (['SHIFTARROW', 'ARROW', 'NONE'].includes(mode)) ? mode : 'ARROW'; },
-      setStartingPoint: function (x, y) {startingPoint = (x && y) ? {x, y} : null;}
+      setStartingPoint: function (x, y) {
+        startingPoint = (Number.isFinite(x) && Number.isFinite(y)) ? {x, y} : null;
+      }
     };
   }
 

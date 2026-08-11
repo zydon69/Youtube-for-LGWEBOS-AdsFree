@@ -83,8 +83,10 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
 
 ### Pre-requisites
 
-- The latest **Node.js** LTS release. Refer to `devEngines` in [`package.json`](package.json) for the minimum version.
-- **pnpm**. If you already have `Node.js`, you can have it automatically setup by running `corepack enable`.
+- **Node.js 24 LTS**, installed independently before cloning or installing
+  dependencies. This repository never downloads a Node.js runtime.
+- **pnpm 10.33.0**. The exact package-manager release and integrity hash are
+  pinned in [`package.json`](package.json); `corepack enable` can expose it.
 - **git**
 - A trusted webOS CLI available on `PATH` is required only for device setup,
   deployment, launch, and inspection. Building and packaging do not depend on it.
@@ -110,10 +112,22 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
 pnpm run package
 ```
 
-The packaging command first runs linting, strict type checking, coverage-gated
-unit tests, the production build, runtime bundle integration testing, ES5
-compatibility validation and the dependency audit. Packaging stops on any
-failure.
+The packaging command first runs linting, strict type checking, source security
+policy checks, coverage-gated unit tests, the production build, bundle and
+Playwright browser tests, ES5 compatibility validation and the dependency
+audit. Packaging stops on any failure.
+
+Coverage is collected with `--all` across every first-party JavaScript and
+TypeScript runtime file. Only the two separately hashed and regression-tested
+vendored polyfills are excluded; the enforced floors are 70% statements/lines,
+70% branches and 85% functions. These are baseline regression guards, not a
+claim that the remaining integration-heavy runtime is fully tested.
+
+Release packaging accepts only a clean Git worktree. It produces a linked set
+of five artifacts: the IPK, the repository manifest, a complete CycloneDX SBOM,
+an in-toto/SLSA provenance statement, and a SHA-256 index. `pnpm package:dev`
+is available for local testing from a dirty worktree; its evidence is explicitly
+marked `development`/`dirty` and must never be published as a release.
 
 SponsorBlock sends a short hashed video-ID prefix to its external API only when
 the user enables it. See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md)
@@ -212,8 +226,11 @@ pnpm run inspect
 ### Build, Install, and Launch
 
 ```sh
-pnpm run qa && pnpm run package && pnpm run deploy && pnpm run launch
+pnpm run package && pnpm run deploy && pnpm run launch
 ```
+
+For an explicitly non-release build from a dirty worktree, use
+`pnpm run package:dev` followed by `pnpm run deploy:dev`.
 
 To launch a specific video directly:
 

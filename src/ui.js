@@ -7,50 +7,149 @@ import {
   configGetDesc
 } from './config.js';
 import './ui.css';
-import { requireElement } from './player_api/helpers';
 import { SPONSORBLOCK_CATEGORY_OPTIONS } from './core/sponsorblock-categories.js';
+import { resolveActiveVideo } from './core/active-media-resolver.ts';
+import {
+  acquireTransactionalOwnership,
+  InlineStyleOwner
+} from './core/inline-style-owner.js';
+import { subscribeDOMMutations } from './core/dom-mutations.js';
 
-// We handle key events ourselves when the bundled polyfill is active.
-if (window.__spatialNavigation__) window.__spatialNavigation__.keyMode = 'NONE';
+const spatialNavigation = window.__spatialNavigation__;
+const previousSpatialKeyMode = spatialNavigation?.keyMode;
+const hadOwnSpatialKeyMode = spatialNavigation
+  ? Object.hasOwn(spatialNavigation, 'keyMode')
+  : false;
+let ownsSpatialKeyMode = false;
+try {
+  if (spatialNavigation) {
+    spatialNavigation.keyMode = 'NONE';
+    ownsSpatialKeyMode = spatialNavigation.keyMode === 'NONE';
+  }
+} catch (error) {
+  console.warn('[ui] Unable to configure spatial navigation', error);
+}
+
+function restoreSpatialNavigation() {
+  if (
+    !ownsSpatialKeyMode ||
+    !spatialNavigation ||
+    spatialNavigation.keyMode !== 'NONE'
+  ) {
+    return;
+  }
+  try {
+    if (previousSpatialKeyMode !== undefined) {
+      spatialNavigation.keyMode = previousSpatialKeyMode;
+    } else if (!hadOwnSpatialKeyMode) {
+      Reflect.deleteProperty(spatialNavigation, 'keyMode');
+    }
+    ownsSpatialKeyMode = false;
+  } catch (error) {
+    console.warn('[ui] Unable to restore spatial navigation', error);
+  }
+}
 
 /** @type {Record<number, 'left' | 'right' | 'up' | 'down'>} */
 const ARROW_KEY_CODE = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
-
 const colorCodeMap = new Map([
   [403, 'red'],
-
   [404, 'green'],
   [172, 'green'],
-
   [405, 'yellow'],
   [170, 'yellow'],
-
   [406, 'blue'],
   [167, 'blue'],
   [191, 'blue']
 ]);
+/** @type {Record<string, string>} */
+const COLOR_MAP = {
+  red: 'rgba(255, 0, 0, 0.9)',
+  green: 'rgba(0, 162, 0, 0.9)',
+  yellow: 'rgba(255, 255, 0, 0.9)',
+  blue: 'rgba(0, 128, 255, 0.9)',
+  indigo: 'rgba(75, 0, 130, 0.9)',
+  grey: 'rgba(255, 255, 255, 0.5)',
+  none: 'rgba(0, 0, 0, 0)'
+};
+const AUDIO_OVERLAY_SELECTOR = '.ytLrAudioPlayerOverlayAudioMode';
+const YTAF_OVERLAY_CLASS = 'ytaf-ui-watchControl-overlayMessage';
+const PANEL_HEADING_ID = 'ytaf-settings-heading';
+const SPONSOR_DESCRIPTION_ID = 'ytaf-sponsor-description';
 
-/**
- * Returns the name of the color button associated with a code or null if not a color button.
- * @param {number} charCode KeyboardEvent.charCode property from event
- * @returns {string | null} Color name or null
- */
-function getKeyColor(charCode) {
-  if (colorCodeMap.has(charCode)) {
-    return colorCodeMap.get(charCode) ?? null;
-  }
+/** @type {Array<() => void>} */
+const configDisposers = [];
+/** @type {Map<HTMLElement, number[]>} */
+const notificationTimers = new Map();
+/** @type {Map<Element, string | null>} */
+const backgroundAriaState = new Map();
 
-  return null;
+let disposed = false;
+let initialized = false;
+let optionsPanelVisible = false;
+/** @type {Element | null} */
+let focusBeforePanel = null;
+/** @type {MutationObserver | null} */
+let modalBodyObserver = null;
+/** @type {MutationObserver | null} */
+let bodyClassObserver = null;
+/** @type {HTMLElement | null} */
+let observedBody = null;
+/** @type {(() => void) | null} */
+let unsubscribeUIBodyDOM = null;
+/** @type {HTMLStyleElement | null} */
+let logoStyle = null;
+/** @type {number | null} */
+let introNotificationTimer = null;
+
+let audioOnlyEnabled = false;
+/** @type {(() => void) | null} */
+let unsubscribeScreenHiddenDOM = null;
+/** @type {number | null} */
+let screenHiddenSyncToken = null;
+/** @type {HTMLVideoElement | null} */
+let audioOnlyVideo = null;
+/** @type {InlineStyleOwner | null} */
+let audioOnlyVideoStyles = null;
+/** @type {HTMLElement | null} */
+let audioOnlyOverlay = null;
+/** @type {InlineStyleOwner | null} */
+let audioOnlyOverlayStyles = null;
+/** @type {HTMLElement | null} */
+let screenHiddenMessage = null;
+let audioOnlyToggleQueue = Promise.resolve();
+
+/** @param {KeyboardEvent} event */
+function getEventCode(event) {
+  return event.keyCode || event.which || event.charCode || 0;
 }
 
-/** @param {string} key */
-function createConfigCheckbox(key) {
+/** @param {KeyboardEvent} event */
+function getKeyColor(event) {
+  return colorCodeMap.get(getEventCode(event)) ?? null;
+}
+
+function getFocusablePanelElements() {
+  return /** @type {HTMLElement[]} */ (
+    Array.from(
+      optionsPanel.querySelectorAll('input, button, select, [tabindex]')
+    ).filter(
+      (element) =>
+        element instanceof HTMLElement &&
+        !element.hasAttribute('disabled') &&
+        element.getAttribute('aria-hidden') !== 'true'
+    )
+  );
+}
+
+/** @param {string} key @param {{ describedBy?: string }} [options] */
+function createConfigCheckbox(key, { describedBy } = {}) {
   const elmInput = document.createElement('input');
   elmInput.type = 'checkbox';
   elmInput.checked = configRead(key);
+  if (describedBy) elmInput.setAttribute('aria-describedby', describedBy);
 
-  /** @type {(evt: Event) => void} */
-  const changeHandler = (_evt) => {
+  const changeHandler = () => {
     try {
       configWrite(key, elmInput.checked);
     } catch (error) {
@@ -59,409 +158,538 @@ function createConfigCheckbox(key) {
       showNotification('Unable to save setting', 2500, 'red');
     }
   };
-
   elmInput.addEventListener('change', changeHandler);
-
-  configAddChangeListener(key, (evt) => {
-    elmInput.checked = evt.detail.newValue;
-  });
+  configDisposers.push(() =>
+    elmInput.removeEventListener('change', changeHandler)
+  );
+  configDisposers.push(
+    configAddChangeListener(key, (event) => {
+      elmInput.checked = event.detail.newValue;
+    })
+  );
 
   const elmLabel = document.createElement('label');
   elmLabel.appendChild(elmInput);
-  // Use non-breaking space (U+00A0)
-  elmLabel.appendChild(document.createTextNode('\u00A0' + configGetDesc(key)));
-
+  elmLabel.appendChild(document.createTextNode(`\u00a0${configGetDesc(key)}`));
   return elmLabel;
 }
 
 function createOptionsPanel() {
-  const elmContainer = document.createElement('div');
+  const container = document.createElement('div');
+  container.className = 'ytaf-ui-container';
+  container.style.display = 'none';
+  container.style.overflowY = 'auto';
+  container.style.boxSizing = 'border-box';
+  container.setAttribute('tabindex', '-1');
+  container.setAttribute('role', 'dialog');
+  container.setAttribute('aria-modal', 'true');
+  container.setAttribute('aria-labelledby', PANEL_HEADING_ID);
+  container.setAttribute('aria-hidden', 'true');
 
-  elmContainer.classList.add('ytaf-ui-container');
-  elmContainer.style['display'] = 'none';
-  elmContainer.setAttribute('tabindex', '0');
-  elmContainer.setAttribute('role', 'dialog');
-  elmContainer.setAttribute('aria-modal', 'true');
-  elmContainer.setAttribute('aria-label', 'YouTube AdFree settings');
+  const heading = document.createElement('h1');
+  heading.id = PANEL_HEADING_ID;
+  heading.textContent = 'YouTube AdFree';
+  container.appendChild(heading);
 
-  elmContainer.addEventListener(
-    'focus',
-    () => console.debug('Options panel focused!'),
-    true
-  );
-  elmContainer.addEventListener(
-    'blur',
-    () => console.debug('Options panel blurred!'),
-    true
-  );
-
-  elmContainer.addEventListener(
-    'keydown',
-    (evt) => {
-      console.debug('Options panel key event:', evt.type, evt.charCode);
-
-      if (getKeyColor(evt.charCode) === 'green') {
-        return;
-      }
-
-      if (evt.keyCode in ARROW_KEY_CODE && window.navigate) {
-        const direction = ARROW_KEY_CODE[evt.keyCode];
-        if (direction) window.navigate(direction);
-      } else if (evt.keyCode === 9) {
-        const focusable = /** @type {HTMLElement[]} */ (
-          Array.from(
-            elmContainer.querySelectorAll('input, button, [tabindex]')
-          ).filter((element) => element instanceof HTMLElement)
-        );
-        const activeElement = document.activeElement;
-        const currentIndex =
-          activeElement instanceof HTMLElement
-            ? focusable.indexOf(activeElement)
-            : -1;
-        const direction = evt.shiftKey ? -1 : 1;
-        const nextIndex =
-          (currentIndex + direction + focusable.length) % focusable.length;
-        const next = focusable[nextIndex];
-        if (next instanceof HTMLElement) next.focus();
-      } else if (evt.keyCode === 13) {
-        // "OK" button
-
-        /**
-         * The YouTube app generates these "OK" events from clicks (including
-         * with the Magic Remote), and we don't want to send a duplicate click
-         * event for those. Youtube uses the `Event` class instead of
-         * `KeyboardEvent` so we check for that.
-         * See issue #143 and #200 for context.
-         */
-        if (evt instanceof KeyboardEvent) {
-          const activeElement = document.activeElement;
-          if (activeElement instanceof HTMLElement) activeElement.click();
-        }
-      } else if (evt.keyCode === 27) {
-        // Back button
-        showOptionsPanel(false);
-      }
-
-      evt.preventDefault();
-      evt.stopPropagation();
-    },
-    true
+  container.appendChild(createConfigCheckbox('enableAdBlock'));
+  container.appendChild(createConfigCheckbox('upgradeThumbnails'));
+  container.appendChild(createConfigCheckbox('hideLogo'));
+  container.appendChild(createConfigCheckbox('showWatch'));
+  container.appendChild(createConfigCheckbox('removeShorts'));
+  container.appendChild(createConfigCheckbox('forceHighResVideo'));
+  container.appendChild(createConfigCheckbox('removeEndscreen'));
+  container.appendChild(createConfigCheckbox('autoAccountSelect'));
+  container.appendChild(
+    createConfigCheckbox('enableSponsorBlock', {
+      describedBy: SPONSOR_DESCRIPTION_ID
+    })
   );
 
-  const elmHeading = document.createElement('h1');
-  elmHeading.textContent = 'YouTube AdFree';
-  elmContainer.appendChild(elmHeading);
-
-  elmContainer.appendChild(createConfigCheckbox('enableAdBlock'));
-  elmContainer.appendChild(createConfigCheckbox('upgradeThumbnails'));
-  elmContainer.appendChild(createConfigCheckbox('hideLogo'));
-  elmContainer.appendChild(createConfigCheckbox('showWatch'));
-  elmContainer.appendChild(createConfigCheckbox('removeShorts'));
-  elmContainer.appendChild(createConfigCheckbox('forceHighResVideo'));
-  elmContainer.appendChild(createConfigCheckbox('removeEndscreen'));
-  elmContainer.appendChild(createConfigCheckbox('autoAccountSelect'));
-  elmContainer.appendChild(createConfigCheckbox('enableSponsorBlock'));
-
-  const elmBlock = document.createElement('blockquote');
-
+  const categoryGroup = document.createElement('fieldset');
+  const categoryLegend = document.createElement('legend');
+  categoryLegend.textContent = 'SponsorBlock categories';
+  categoryGroup.appendChild(categoryLegend);
   for (const option of SPONSORBLOCK_CATEGORY_OPTIONS) {
-    elmBlock.appendChild(createConfigCheckbox(option.configKey));
+    categoryGroup.appendChild(createConfigCheckbox(option.configKey));
   }
+  container.appendChild(categoryGroup);
 
-  elmContainer.appendChild(elmBlock);
-
-  const elmSponsorLink = document.createElement('small');
-  elmSponsorLink.className = 'ytaf-ui-sponsor';
-  elmSponsorLink.textContent =
-    'Sponsor segments skipping - https://sponsor.ajay.app';
-  elmContainer.appendChild(elmSponsorLink);
+  const sponsorDescription = document.createElement('small');
+  sponsorDescription.id = SPONSOR_DESCRIPTION_ID;
+  sponsorDescription.className = 'ytaf-ui-sponsor';
+  sponsorDescription.textContent =
+    'Sponsor segments: data provided by sponsor.ajay.app';
+  container.appendChild(sponsorDescription);
 
   const version = document.createElement('div');
   version.className = 'ytaf-ui-version';
   version.textContent = `v${__YTAF_VERSION__}`;
-
-  elmContainer.appendChild(version);
-
-  return elmContainer;
+  container.appendChild(version);
+  return container;
 }
 
-const optionsPanel = createOptionsPanel();
-if (document.body) document.body.appendChild(optionsPanel);
-else {
-  document.addEventListener(
-    'DOMContentLoaded',
-    () => document.body.appendChild(optionsPanel),
-    { once: true }
-  );
+const optionsPanel = (() => {
+  try {
+    return createOptionsPanel();
+  } catch (error) {
+    for (const removeListener of configDisposers.splice(0)) {
+      try {
+        removeListener();
+      } catch (cleanupError) {
+        console.warn(
+          '[ui] Unable to roll back a settings listener',
+          cleanupError
+        );
+      }
+    }
+    restoreSpatialNavigation();
+    throw error;
+  }
+})();
+
+function restoreModalBackground() {
+  modalBodyObserver?.disconnect();
+  modalBodyObserver = null;
+  for (const [element, previous] of backgroundAriaState) {
+    if (element.getAttribute('aria-hidden') !== 'true') continue;
+    if (previous === null) element.removeAttribute('aria-hidden');
+    else element.setAttribute('aria-hidden', previous);
+  }
+  backgroundAriaState.clear();
 }
 
-let optionsPanelVisible = false;
-/** @type {Element | null} */
-let focusBeforePanel = null;
+/** @param {Element} element */
+function hideModalSibling(element) {
+  if (
+    element === optionsPanel ||
+    element.classList.contains('ytaf-notification-container')
+  ) {
+    return;
+  }
+  if (!backgroundAriaState.has(element)) {
+    backgroundAriaState.set(element, element.getAttribute('aria-hidden'));
+  }
+  element.setAttribute('aria-hidden', 'true');
+}
 
-/**
- * Show or hide the options panel.
- * @param {boolean} [visible=true] Whether to show the options panel.
- */
-function showOptionsPanel(visible) {
-  visible ??= true;
+function hideModalBackground() {
+  restoreModalBackground();
+  if (!document.body) return;
+  for (let index = 0; index < document.body.children.length; index++) {
+    const child = document.body.children[index];
+    if (child) hideModalSibling(child);
+  }
+  modalBodyObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (let index = 0; index < mutation.addedNodes.length; index++) {
+        const node = mutation.addedNodes[index];
+        if (node instanceof Element && node.parentElement === document.body) {
+          hideModalSibling(node);
+        }
+      }
+    }
+  });
+  modalBodyObserver.observe(document.body, { childList: true });
+}
 
+/** @param {boolean} [visible] */
+function showOptionsPanel(visible = true) {
+  if (disposed) return;
   if (visible && !optionsPanelVisible) {
-    console.debug('Showing and focusing options panel!');
     focusBeforePanel = document.activeElement;
     optionsPanel.style.display = 'block';
-    optionsPanel.focus();
+    optionsPanel.setAttribute('aria-hidden', 'false');
     optionsPanelVisible = true;
+    hideModalBackground();
+    const first = getFocusablePanelElements()[0];
+    (first ?? optionsPanel).focus();
   } else if (!visible && optionsPanelVisible) {
-    console.debug('Hiding options panel!');
-    optionsPanel.style.display = 'none';
-    optionsPanel.blur();
-    if (focusBeforePanel instanceof HTMLElement) focusBeforePanel.focus();
-    focusBeforePanel = null;
     optionsPanelVisible = false;
+    optionsPanel.style.display = 'none';
+    optionsPanel.setAttribute('aria-hidden', 'true');
+    restoreModalBackground();
+    if (
+      focusBeforePanel instanceof HTMLElement &&
+      document.documentElement.contains(focusBeforePanel)
+    ) {
+      focusBeforePanel.focus();
+    }
+    focusBeforePanel = null;
   }
 }
 
-window.ytaf_showOptionsPanel = showOptionsPanel;
+const previousOptionsPanelDescriptor = Object.getOwnPropertyDescriptor(
+  window,
+  'ytaf_showOptionsPanel'
+);
+let ownsOptionsPanelGlobal = false;
+try {
+  window.ytaf_showOptionsPanel = showOptionsPanel;
+  ownsOptionsPanelGlobal = window.ytaf_showOptionsPanel === showOptionsPanel;
+} catch (error) {
+  console.warn('[ui] Unable to expose the settings panel command', error);
+}
 
-/** @param {KeyboardEvent} evt */
-const eventHandler = (evt) => {
-  console.debug(
-    'Key event:',
-    evt.type,
-    evt.charCode,
-    evt.keyCode,
-    evt.defaultPrevented
-  );
+/** @param {KeyboardEvent} event */
+function handlePanelKeyDown(event) {
+  if (getKeyColor(event) === 'green') return;
+  const code = getEventCode(event);
+  const focusable = getFocusablePanelElements();
+  let handled = false;
 
-  if (getKeyColor(evt.charCode) === 'green') {
-    console.debug('Taking over!');
-
-    evt.preventDefault();
-    evt.stopPropagation();
-
-    if (evt.type === 'keydown') {
-      // Toggle visibility.
-      showOptionsPanel(!optionsPanelVisible);
+  if (code in ARROW_KEY_CODE && typeof window.navigate === 'function') {
+    const direction = ARROW_KEY_CODE[code];
+    if (direction) window.navigate(direction);
+    window.setTimeout(() => {
+      if (
+        optionsPanelVisible &&
+        !optionsPanel.contains(document.activeElement)
+      ) {
+        (focusable[0] ?? optionsPanel).focus();
+      }
+    }, 0);
+    handled = true;
+  } else if (code === 9) {
+    const active = document.activeElement;
+    const currentIndex =
+      active instanceof HTMLElement ? focusable.indexOf(active) : -1;
+    const nextIndex =
+      currentIndex < 0
+        ? event.shiftKey
+          ? focusable.length - 1
+          : 0
+        : (currentIndex + (event.shiftKey ? -1 : 1) + focusable.length) %
+          focusable.length;
+    const next = focusable[nextIndex];
+    if (next) next.focus();
+    handled = true;
+  } else if (code === 13) {
+    if (
+      typeof KeyboardEvent !== 'undefined' &&
+      event instanceof KeyboardEvent &&
+      document.activeElement instanceof HTMLElement
+    ) {
+      document.activeElement.click();
     }
-    return false;
-  } else if (getKeyColor(evt.charCode) === 'blue') {
-    evt.preventDefault();
-    evt.stopPropagation();
-
-    if (evt.type === 'keydown') {
-      // Toggle Audio-Only mode.
-      void initAudioOnlyToggle().catch((error) => {
-        console.warn('[screen-hidden] Unable to toggle mode', error);
-        showNotification('Screen-hidden mode unavailable', 2000, 'red');
-      });
-    }
-    return false;
+    handled = true;
+  } else if (code === 27 || code === 461) {
+    showOptionsPanel(false);
+    handled = true;
   }
-  return true;
-};
 
-document.addEventListener('keydown', eventHandler, true);
-document.addEventListener('keypress', eventHandler, true);
-document.addEventListener('keyup', eventHandler, true);
+  if (handled) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
 
-/** @type {Record<string, string>} */
-const COLOR_MAP = {
-  red: 'rgba(255, 0, 0, 0.9)',
-  green: 'rgba(0, 162, 0, 0.9)',
-  yellow: 'rgba(255, 255, 0, 0.9)',
-  blue: 'rgba(0, 128, 255, 0.9)',
-  grey: 'rgba(255, 255, 255, 0.5)',
-  none: 'rgba(0, 0, 0, 0)'
-};
+optionsPanel.addEventListener('keydown', handlePanelKeyDown, true);
+
+/** @param {FocusEvent} event */
+function trapPanelFocus(event) {
+  if (
+    !optionsPanelVisible ||
+    optionsPanel.contains(/** @type {Node | null} */ (event.target))
+  ) {
+    return;
+  }
+  (getFocusablePanelElements()[0] ?? optionsPanel).focus();
+  event.stopPropagation();
+}
+
+document.addEventListener('focusin', trapPanelFocus, true);
+
+/** @param {HTMLElement} element */
+function removeNotification(element) {
+  const timers = notificationTimers.get(element) ?? [];
+  for (const timer of timers) window.clearTimeout(timer);
+  notificationTimers.delete(element);
+  element.remove();
+}
 
 /** @param {string} text @param {number} time @param {string} color */
 export function showNotification(text, time = 3000, color = 'grey') {
+  if (disposed || !document.body) return;
+  const duration = Number.isFinite(time) ? Math.max(0, time) : 3000;
   let container = document.querySelector('.ytaf-notification-container');
   if (!(container instanceof HTMLElement)) {
-    console.debug('Adding notification container');
-    const c = document.createElement('div');
-    c.classList.add('ytaf-notification-container');
-    c.setAttribute('role', 'status');
-    c.setAttribute('aria-live', 'polite');
-    document.body.appendChild(c);
-    container = c;
+    container = document.createElement('div');
+    container.className = 'ytaf-notification-container';
+    container.setAttribute('role', 'status');
+    container.setAttribute('aria-live', 'polite');
+    container.setAttribute('aria-atomic', 'false');
+    document.body.appendChild(container);
   }
 
-  while (container.children.length >= 5) container.firstElementChild?.remove();
+  while (container.children.length >= 5) {
+    const oldest = container.firstElementChild;
+    if (oldest instanceof HTMLElement) removeNotification(oldest);
+    else oldest?.remove();
+  }
 
-  const elm = document.createElement('div');
-  const elmInner = document.createElement('div');
-  elmInner.innerText = text;
-  elmInner.classList.add('message');
-  elmInner.classList.add('message-hidden');
-  elm.appendChild(elmInner);
-  container.appendChild(elm);
-  elmInner.style.borderColor = COLOR_MAP[color] || color;
+  const element = document.createElement('div');
+  const message = document.createElement('div');
+  message.textContent = text;
+  message.className = 'message message-hidden';
+  message.style.borderColor = COLOR_MAP[color] || color;
+  element.appendChild(message);
+  container.appendChild(element);
 
-  setTimeout(() => {
-    elmInner.classList.remove('message-hidden');
+  const revealTimer = window.setTimeout(() => {
+    if (document.documentElement.contains(element)) {
+      message.classList.remove('message-hidden');
+    }
   }, 100);
-  setTimeout(() => {
-    elmInner.classList.add('message-hidden');
-    setTimeout(() => {
-      elm.remove();
-    }, 1000);
-  }, time);
+  const hideTimer = window.setTimeout(
+    () => {
+      message.classList.add('message-hidden');
+      const removeTimer = window.setTimeout(
+        () => removeNotification(element),
+        1_000
+      );
+      notificationTimers.get(element)?.push(removeTimer);
+    },
+    Math.max(100, duration)
+  );
+  notificationTimers.set(element, [revealTimer, hideTimer]);
 }
 
-/**
- * Initialize ability to hide YouTube logo in top right corner.
- */
 function initHideLogo() {
-  const style = document.createElement('style');
-  document.head.appendChild(style);
-
-  /** @type {(hide: boolean) => void} */
+  if (logoStyle) return;
+  logoStyle = document.createElement('style');
+  document.head.appendChild(logoStyle);
+  /** @param {boolean} hide */
   const setHidden = (hide) => {
-    const visibility = hide ? 'hidden' : 'visible';
-    style.textContent = `ytlr-redux-connect-ytlr-logo-entity { visibility: ${visibility}; }`;
+    if (logoStyle) {
+      logoStyle.textContent = hide
+        ? 'ytlr-redux-connect-ytlr-logo-entity { visibility: hidden; }'
+        : '';
+    }
   };
-
   setHidden(configRead('hideLogo'));
+  configDisposers.push(
+    configAddChangeListener('hideLogo', (event) => {
+      setHidden(event.detail.newValue);
+    })
+  );
+}
 
-  configAddChangeListener('hideLogo', (evt) => {
-    setHidden(evt.detail.newValue);
+function removeQualityRootClass() {
+  if (document.body?.classList.contains('app-quality-root')) {
+    document.body.classList.remove('app-quality-root');
+  }
+}
+
+function bindBodyFeatures() {
+  const body = document.body;
+  if (!body || body === observedBody) return;
+  bodyClassObserver?.disconnect();
+  observedBody = body;
+  if (!body.contains(optionsPanel)) body.appendChild(optionsPanel);
+  removeQualityRootClass();
+  bodyClassObserver = new MutationObserver(removeQualityRootClass);
+  bodyClassObserver.observe(body, {
+    attributes: true,
+    attributeFilter: ['class']
   });
+  if (optionsPanelVisible) hideModalBackground();
 }
 
-function applyUIFixes() {
-  try {
-    const bodyClasses = document.body.classList;
-
-    const observer = new MutationObserver(function bodyClassCallback(
-      _records,
-      _observer
-    ) {
-      try {
-        if (bodyClasses.contains('app-quality-root')) {
-          bodyClasses.remove('app-quality-root');
-        }
-      } catch (e) {
-        console.error('error in <body> class observer callback:', e);
-      }
-    });
-
-    observer.observe(document.body, {
-      subtree: false,
-      childList: false,
-      attributes: true,
-      attributeFilter: ['class'],
-      characterData: false
-    });
-  } catch (e) {
-    console.error('error setting up <body> class observer:', e);
+/** @param {HTMLVideoElement} video */
+function getPlayerRoot(video) {
+  let parent = video.parentElement;
+  while (parent) {
+    if (parent.classList.contains('html5-video-player')) return parent;
+    parent = parent.parentElement;
   }
+  return null;
 }
 
-let audioOnlyEnabled = false;
-/** @type {MutationObserver | null} */
-let overlayObserver = null;
-/** @type {number | null} */
-let screenHiddenSyncToken = null;
-/** @type {HTMLVideoElement | null} */
-let audioOnlyVideo = null;
-
-const AUDIO_OVERLAY_SELECTOR = '.ytLrAudioPlayerOverlayAudioMode';
-const YTAF_OVERLAY_CLASS = 'ytaf-ui-watchControl-overlayMessage';
-
-function applyScreenHiddenState() {
-  const currentVideo = document.querySelector('video');
-  if (audioOnlyVideo && audioOnlyVideo !== currentVideo) {
-    audioOnlyVideo.style.visibility = '';
+function getScreenHiddenVideo() {
+  const selected = resolveActiveVideo();
+  if (!audioOnlyEnabled || !audioOnlyVideo || selected === audioOnlyVideo) {
+    return selected;
   }
-  audioOnlyVideo =
-    currentVideo instanceof HTMLVideoElement ? currentVideo : null;
-  if (audioOnlyVideo) {
-    audioOnlyVideo.style.visibility = audioOnlyEnabled ? 'hidden' : '';
+  const currentConnected = document.documentElement.contains(audioOnlyVideo);
+  if (currentConnected && audioOnlyVideo.ended !== true) {
+    return audioOnlyVideo;
   }
+  return selected;
+}
 
-  const audioOverlay = document.querySelector(AUDIO_OVERLAY_SELECTOR);
-  if (audioOverlay instanceof HTMLElement) {
-    if (audioOnlyEnabled) {
-      audioOverlay.style.setProperty('filter', 'brightness(0)', 'important');
-    } else {
-      audioOverlay.style.removeProperty('filter');
+/** @param {HTMLElement | null} playerRoot @param {string} selector */
+function findAssociatedElement(playerRoot, selector) {
+  const rooted = playerRoot?.querySelectorAll(selector);
+  const candidates = rooted?.length
+    ? rooted
+    : document.querySelectorAll(selector);
+  let selected = null;
+  let selectedArea = -1;
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!(candidate instanceof HTMLElement)) continue;
+    const rect = candidate.getBoundingClientRect();
+    const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+    if (area >= selectedArea) {
+      selected = candidate;
+      selectedArea = area;
     }
   }
+  return selected;
+}
 
-  const controls = document.querySelector('[idomkey="controls"]');
-  if (!(controls instanceof HTMLElement)) return;
-  const existing = controls.querySelector(`.${YTAF_OVERLAY_CLASS}`);
+function restoreScreenHiddenStyles() {
+  audioOnlyVideoStyles?.restore();
+  audioOnlyVideoStyles = null;
+  audioOnlyVideo = null;
+  audioOnlyOverlayStyles?.restore();
+  audioOnlyOverlayStyles = null;
+  audioOnlyOverlay = null;
+  screenHiddenMessage?.remove();
+  screenHiddenMessage = null;
+}
+
+function applyScreenHiddenState() {
   if (!audioOnlyEnabled) {
-    existing?.remove();
-  } else if (!existing) {
-    controls.prepend(
-      Object.assign(document.createElement('div'), {
-        textContent: 'Screen hidden - Press [BLUE] to toggle',
-        className: YTAF_OVERLAY_CLASS
-      })
-    );
+    restoreScreenHiddenStyles();
+    return true;
   }
+
+  const nextVideo = getScreenHiddenVideo();
+  const playerRoot = nextVideo ? getPlayerRoot(nextVideo) : null;
+  const controls = findAssociatedElement(playerRoot, '[idomkey="controls"]');
+  if (!nextVideo || !controls) return false;
+
+  if (!screenHiddenMessage || screenHiddenMessage.parentElement !== controls) {
+    screenHiddenMessage?.remove();
+    screenHiddenMessage = document.createElement('div');
+    screenHiddenMessage.textContent = 'Screen hidden - Press [BLUE] to toggle';
+    screenHiddenMessage.className = YTAF_OVERLAY_CLASS;
+    screenHiddenMessage.setAttribute('role', 'status');
+    controls.insertBefore(screenHiddenMessage, controls.firstChild);
+  }
+
+  if (nextVideo !== audioOnlyVideo) {
+    audioOnlyVideoStyles?.restore();
+    audioOnlyVideo = nextVideo;
+    audioOnlyVideoStyles = new InlineStyleOwner(nextVideo, ['visibility']);
+  }
+
+  const nextOverlay = findAssociatedElement(playerRoot, AUDIO_OVERLAY_SELECTOR);
+  if (nextOverlay !== audioOnlyOverlay) {
+    audioOnlyOverlayStyles?.restore();
+    audioOnlyOverlay = nextOverlay;
+    audioOnlyOverlayStyles = nextOverlay
+      ? new InlineStyleOwner(nextOverlay, ['filter'])
+      : null;
+  }
+
+  audioOnlyVideoStyles?.set('visibility', 'hidden');
+  audioOnlyOverlayStyles?.set('filter', 'brightness(0)', 'important');
+  return true;
 }
 
 function queueScreenHiddenState() {
   if (!audioOnlyEnabled || screenHiddenSyncToken !== null) return;
   screenHiddenSyncToken = window.setTimeout(() => {
     screenHiddenSyncToken = null;
-    applyScreenHiddenState();
+    try {
+      applyScreenHiddenState();
+    } catch (error) {
+      console.warn('[screen-hidden] Synchronization failed', error);
+    }
   }, 50);
 }
 
 function stopScreenHiddenObserver() {
-  overlayObserver?.disconnect();
-  overlayObserver = null;
+  unsubscribeScreenHiddenDOM?.();
+  unsubscribeScreenHiddenDOM = null;
   if (screenHiddenSyncToken !== null) {
     window.clearTimeout(screenHiddenSyncToken);
     screenHiddenSyncToken = null;
   }
 }
 
-async function initAudioOnlyToggle() {
-  if (!audioOnlyEnabled) {
-    await Promise.all([
-      requireElement('video', HTMLVideoElement),
-      requireElement('[idomkey="controls"]', HTMLElement)
-    ]);
-  }
-
-  audioOnlyEnabled = !audioOnlyEnabled;
-  applyScreenHiddenState();
-
-  showNotification(
-    `Screen hidden: ${audioOnlyEnabled ? 'Enabled' : 'Disabled'}`,
-    2000,
-    'blue'
-  );
-
-  stopScreenHiddenObserver();
-  if (!audioOnlyEnabled) {
+function toggleAudioOnly() {
+  if (audioOnlyEnabled) {
+    audioOnlyEnabled = false;
+    stopScreenHiddenObserver();
+    applyScreenHiddenState();
+    showNotification('Screen hidden: Disabled', 2000, 'blue');
     return;
   }
 
-  overlayObserver = new MutationObserver(queueScreenHiddenState);
-
-  overlayObserver.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
+  audioOnlyEnabled = true;
+  try {
+    unsubscribeScreenHiddenDOM = acquireTransactionalOwnership({
+      apply: applyScreenHiddenState,
+      subscribe: () =>
+        subscribeDOMMutations(queueScreenHiddenState, { delayMs: 25 }),
+      notify: () => showNotification('Screen hidden: Enabled', 2000, 'blue'),
+      rollback: () => {
+        audioOnlyEnabled = false;
+        restoreScreenHiddenStyles();
+      }
+    });
+  } catch (error) {
+    audioOnlyEnabled = false;
+    restoreScreenHiddenStyles();
+    throw error;
+  }
 }
 
-function initializeUIFixes() {
-  applyUIFixes();
-  initHideLogo();
-  setTimeout(() => {
-    showNotification(
-      'Press [GREEN] to open YTAF configuration screen',
-      2000,
-      'green'
-    );
+function queueAudioOnlyToggle() {
+  const operation = audioOnlyToggleQueue.then(() => {
+    if (disposed) return;
+    toggleAudioOnly();
   });
+  audioOnlyToggleQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+/** @param {KeyboardEvent} event */
+function handleGlobalRemoteKey(event) {
+  const color = getKeyColor(event);
+  if (color !== 'green' && color !== 'blue') return true;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.type !== 'keydown' || event.repeat) return false;
+
+  if (color === 'green') showOptionsPanel(!optionsPanelVisible);
+  else {
+    void queueAudioOnlyToggle().catch((error) => {
+      console.warn('[screen-hidden] Unable to toggle mode', error);
+      showNotification('Screen-hidden mode unavailable', 2000, 'red');
+    });
+  }
+  return false;
+}
+
+document.addEventListener('keydown', handleGlobalRemoteKey, true);
+document.addEventListener('keypress', handleGlobalRemoteKey, true);
+document.addEventListener('keyup', handleGlobalRemoteKey, true);
+
+function initializeUIFixes() {
+  if (disposed || initialized || !document.body) return;
+  initialized = true;
+  try {
+    bindBodyFeatures();
+    unsubscribeUIBodyDOM = subscribeDOMMutations(bindBodyFeatures, {
+      delayMs: 50
+    });
+    initHideLogo();
+    introNotificationTimer = window.setTimeout(() => {
+      introNotificationTimer = null;
+      showNotification(
+        'Press [GREEN] to open YTAF configuration screen',
+        2000,
+        'green'
+      );
+    }, 0);
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }
 
 if (document.body) initializeUIFixes();
@@ -469,4 +697,55 @@ else {
   document.addEventListener('DOMContentLoaded', initializeUIFixes, {
     once: true
   });
+}
+
+export function dispose() {
+  if (disposed) return;
+  showOptionsPanel(false);
+  disposed = true;
+  optionsPanelVisible = false;
+  restoreModalBackground();
+  audioOnlyEnabled = false;
+  stopScreenHiddenObserver();
+  restoreScreenHiddenStyles();
+  unsubscribeUIBodyDOM?.();
+  unsubscribeUIBodyDOM = null;
+  bodyClassObserver?.disconnect();
+  bodyClassObserver = null;
+  observedBody = null;
+  if (introNotificationTimer !== null) {
+    window.clearTimeout(introNotificationTimer);
+    introNotificationTimer = null;
+  }
+  for (const element of notificationTimers.keys()) removeNotification(element);
+  document.querySelector('.ytaf-notification-container')?.remove();
+  for (const removeListener of configDisposers.splice(0)) removeListener();
+  logoStyle?.remove();
+  logoStyle = null;
+  optionsPanel.remove();
+  optionsPanel.removeEventListener('keydown', handlePanelKeyDown, true);
+  document.removeEventListener('focusin', trapPanelFocus, true);
+  document.removeEventListener('keydown', handleGlobalRemoteKey, true);
+  document.removeEventListener('keypress', handleGlobalRemoteKey, true);
+  document.removeEventListener('keyup', handleGlobalRemoteKey, true);
+  document.removeEventListener('DOMContentLoaded', initializeUIFixes);
+  if (
+    ownsOptionsPanelGlobal &&
+    window.ytaf_showOptionsPanel === showOptionsPanel
+  ) {
+    try {
+      if (previousOptionsPanelDescriptor) {
+        Object.defineProperty(
+          window,
+          'ytaf_showOptionsPanel',
+          previousOptionsPanelDescriptor
+        );
+      } else {
+        delete window.ytaf_showOptionsPanel;
+      }
+    } catch (error) {
+      console.warn('[ui] Unable to restore settings panel command', error);
+    }
+  }
+  restoreSpatialNavigation();
 }

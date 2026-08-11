@@ -3,13 +3,19 @@
  */
 
 import { FetchRegistry } from './hooks';
+import { isWebOSCastWakeRequest } from './core/request-policy';
 
-FetchRegistry.getInstance().addEventListener('request', (evt) => {
+const registry = FetchRegistry.getInstance();
+const handleRequest = (evt: {
+  detail: { url: URL };
+  preventDefault(): void;
+}) => {
   const { url } = evt.detail;
-  if (
-    url.origin === 'https://www.youtube.com' &&
-    url.pathname === '/wake_cast_core'
-  ) {
-    evt.preventDefault();
-  }
-});
+  if (isWebOSCastWakeRequest(url)) evt.preventDefault();
+};
+
+registry.addEventListener('request', handleRequest);
+
+export function dispose() {
+  registry.removeEventListener('request', handleRequest);
+}

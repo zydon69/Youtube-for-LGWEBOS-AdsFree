@@ -87,30 +87,54 @@ const configFrags = (() => {
   return ret;
 })();
 
+/** @param {Record<string, boolean>} config @param {boolean} removeLegacy */
+function persistNormalizedConfig(config, removeLegacy = false) {
+  try {
+    window.localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    if (removeLegacy && typeof window.localStorage.removeItem === 'function') {
+      window.localStorage.removeItem(LEGACY_CONFIG_KEY);
+    }
+    return true;
+  } catch (error) {
+    console.warn('[config] Unable to repair stored configuration:', error);
+    return false;
+  }
+}
+
 function loadStoredConfig() {
+  let normalized = normalizeConfig(null, defaultConfig);
+  let shouldPersist;
+  let removeLegacy = false;
+
   try {
     const storage = window.localStorage.getItem(CONFIG_KEY);
-    if (storage === null) {
+    if (storage !== null) {
+      const parsed = JSON.parse(storage);
+      normalized = normalizeConfig(parsed, defaultConfig);
+      shouldPersist = JSON.stringify(parsed) !== JSON.stringify(normalized);
+    } else {
       const legacyStorage = window.localStorage.getItem(LEGACY_CONFIG_KEY);
       if (legacyStorage !== null) {
-        const migrated = normalizeConfig(
-          JSON.parse(legacyStorage),
-          defaultConfig
-        );
+        normalized = normalizeConfig(JSON.parse(legacyStorage), defaultConfig);
         // Previous releases enabled the third-party service by default. An
         // upgrade must require a fresh, explicit opt-in.
-        migrated.enableSponsorBlock = false;
-        return migrated;
+        normalized.enableSponsorBlock = false;
+        shouldPersist = true;
+        removeLegacy = true;
+      } else {
+        shouldPersist = true;
       }
-      console.info('Config not set; using defaults.');
-      return normalizeConfig(null, defaultConfig);
     }
-
-    return normalizeConfig(JSON.parse(storage), defaultConfig);
   } catch (err) {
+    // Repair malformed/partially written values so every following launch has
+    // a canonical schema instead of repeatedly parsing the same corruption.
     console.warn('Error parsing stored config:', err);
-    return normalizeConfig(null, defaultConfig);
+    normalized = normalizeConfig(null, defaultConfig);
+    shouldPersist = true;
   }
+
+  if (shouldPersist) persistNormalizedConfig(normalized, removeLegacy);
+  return normalized;
 }
 
 const localConfig = loadStoredConfig();
@@ -151,8 +175,8 @@ export function configWrite(key, value) {
 
   const oldValue = localConfig[key];
   if (oldValue === undefined) throw new Error(`missing config value: ${key}`);
+  if (oldValue === value) return;
 
-  console.info('Changing key', key, 'from', oldValue, 'to', value);
   localConfig[key] = value;
   try {
     window.localStorage.setItem(CONFIG_KEY, JSON.stringify(localConfig));
@@ -183,6 +207,7 @@ export function configAddChangeListener(key, callback) {
   if (!frag) throw new Error(`missing config event target: ${key}`);
 
   frag.addEventListener('ytafConfigChange', callback);
+  return () => frag.removeEventListener('ytafConfigChange', callback);
 }
 
 /**

@@ -7,7 +7,6 @@ import {
 } from '../src/custom-event-target.ts';
 import { fetchSponsorBlockJSON } from '../src/core/sponsorblock-client.js';
 import {
-  MAX_SPONSORBLOCK_CANDIDATES,
   MAX_SPONSORBLOCK_RESPONSE_BYTES,
   parseSponsorBlockResponse
 } from '../src/core/sponsorblock-schema.js';
@@ -54,6 +53,48 @@ test('SponsorBlock client rejects non-retryable and oversized responses', async 
     ),
     /too large/
   );
+
+  await assert.rejects(
+    fetchSponsorBlockJSON(
+      'https://sponsor.ajay.app/api/test',
+      async () => new Response('x'.repeat(MAX_SPONSORBLOCK_RESPONSE_BYTES + 1))
+    ),
+    /too large/
+  );
+
+  let legacyTextRead = false;
+  await assert.rejects(
+    fetchSponsorBlockJSON('https://sponsor.ajay.app/api/test', async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: null,
+      text: async () => {
+        legacyTextRead = true;
+        return '[]';
+      }
+    })),
+    /size is unknown/
+  );
+  assert.equal(legacyTextRead, false);
+});
+
+test('SponsorBlock client honors cancellation before making a request', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let requests = 0;
+  await assert.rejects(
+    fetchSponsorBlockJSON(
+      'https://sponsor.ajay.app/api/test',
+      async () => {
+        requests++;
+        return new Response('[]');
+      },
+      { signal: controller.signal }
+    ),
+    { name: 'AbortError' }
+  );
+  assert.equal(requests, 0);
 });
 
 test('SponsorBlock client parses bounded bodies and retries server failures', async () => {
@@ -63,7 +104,10 @@ test('SponsorBlock client parses bounded bodies and retries server failures', as
     async () => {
       requests++;
       if (requests === 1) return new Response('temporary', { status: 503 });
-      return new Response('[{"videoID":"video","segments":[]}]');
+      const body = '[{"videoID":"video","segments":[]}]';
+      return new Response(body, {
+        headers: { 'content-length': String(body.length) }
+      });
     }
   );
 
@@ -71,14 +115,15 @@ test('SponsorBlock client parses bounded bodies and retries server failures', as
   assert.deepEqual(result, [{ videoID: 'video', segments: [] }]);
 });
 
-test('SponsorBlock schema caps candidates, duration and duplicates', () => {
-  assert.deepEqual(
-    parseSponsorBlockResponse(
-      Array.from({ length: MAX_SPONSORBLOCK_CANDIDATES + 1 }, () => ({})),
-      'video'
-    ),
-    []
-  );
+test('SponsorBlock schema searches bounded bodies, caps duration and duplicates', () => {
+  const manyCandidates = Array.from({ length: 100 }, () => ({}));
+  manyCandidates.push({
+    videoID: 'video',
+    segments: [{ category: 'sponsor', segment: [1, 2] }]
+  });
+  assert.deepEqual(parseSponsorBlockResponse(manyCandidates, 'video'), [
+    { category: 'sponsor', segment: [1, 2] }
+  ]);
 
   assert.deepEqual(
     parseSponsorBlockResponse(

@@ -1,7 +1,12 @@
 *.ipk
 *.manifest.json
+*.provenance.json
+*.sha256
 /sbom.cdx.json
 /node_modules/
 /dist/
+/coverage/
+/playwright-report/
+/test-results/
 .DS_Store
 /.vscode/

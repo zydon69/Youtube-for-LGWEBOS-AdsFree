@@ -1,7 +1,17 @@
 import { configRead } from './config';
-import { removeShortsFromResponse } from './core/json-transforms';
+import {
+  hasRemovableShorts,
+  removeShortsFromResponse
+} from './core/json-transforms';
 import { registerJSONParseTransformer } from './hooks/json';
 
-registerJSONParseTransformer('shorts', removeShortsFromResponse, () =>
-  configRead('removeShorts')
+const unregisterTransformer = registerJSONParseTransformer(
+  'shorts',
+  removeShortsFromResponse,
+  () => configRead('removeShorts'),
+  hasRemovableShorts
 );
+
+export function dispose() {
+  unregisterTransformer();
+}

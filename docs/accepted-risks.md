@@ -16,7 +16,9 @@
 - Owner: `zydon69`.
 - Reason: explicit manual-release policy.
 - Horizon: review before accepting external release maintainers.
-- Controls: local `pnpm qa`, deterministic packaging and package verifier.
+- Controls: local `pnpm qa`, clean-tree release refusal, deterministic
+  packaging, a fresh source rebuild during package verification, linked SBOM
+  and provenance evidence, and a manually verified checksum signature.
 - Exit criterion: a reviewed CI design with immutable third-party action SHAs
   and no release credentials exposed to untrusted pull requests.
 
@@ -52,3 +54,60 @@
   hook rejection, reversible fetch hook and rebindable command registry.
 - Exit criterion: YouTube publishes a supported interception/extension API or
   the affected features are removed.
+
+## Legacy buffered fetch
+
+- Owner: SponsorBlock integration (`zydon69`).
+- Reason: older supported webOS engines expose a buffered fetch polyfill with
+  neither response streams nor `AbortController`.
+- Horizon: review whenever the minimum supported webOS version changes.
+- Controls: opt-in only, official HTTPS endpoint, JSON `Content-Type` required
+  when CORS does not expose `Content-Length`, decoded UTF-8 size recheck after
+  the unavoidable legacy buffer, a logical timeout covering fetch and body
+  decoding, schema bounds and stale-result discard. On engines without
+  `AbortController`, the rejected request's underlying network buffer may still
+  continue until the browser finishes it.
+- Exit criterion: all supported engines provide streaming fetch and abortable
+  requests, or the integration moves to a transport with progress cancellation.
+
+## webOS compatibility User-Agent
+
+- Owner: `zydon69`.
+- Reason: the stock-compatible User-Agent exposes the TV model, firmware,
+  platform and network mode so YouTube can select the expected TV client and
+  compatibility behavior.
+- Horizon: review whenever the minimum supported webOS version or YouTube
+  client contract changes.
+- Controls: the value is declarative and sent through browser HTTPS requests;
+  it reaches YouTube and, only after SponsorBlock opt-in, SponsorBlock. The
+  disclosure is documented in `PRIVACY.md`.
+- Exit criterion: a reduced User-Agent has been tested successfully across the
+  supported physical-TV matrix and no longer needs model, firmware or network
+  mode placeholders.
+
+## Local unsigned provenance
+
+- Owner: release maintainers (`zydon69`).
+- Reason: local development has no centrally managed signing identity or
+  hardware-backed key available to the packaging tool.
+- Horizon: review before every public release and whenever release ownership
+  changes.
+- Controls: deterministic source rebuild, exact artifact comparison, an
+  in-toto/SLSA statement, a checksum index binding every output, a signed Git
+  tag, and an external signature over the checksum index before publication.
+- Exit criterion: an organization-managed signing or transparency service can
+  issue and verify release attestations without exposing credentials to the
+  repository or untrusted contributions.
+
+## JavaScript test type coverage
+
+- Owner: `zydon69`.
+- Reason: several test doubles intentionally implement only small DOM and
+  happy-dom surfaces; their structural shapes are not assignable to the full
+  `lib.dom` interfaces required by project-wide `checkJs`.
+- Horizon: reduce progressively while migrating test helpers and suites to
+  TypeScript.
+- Controls: ESLint with zero warnings, execution under the pinned Node.js
+  runtime, behavioral assertions and whole-runtime coverage thresholds.
+- Exit criterion: the complete test suite and its DOM fakes are type-checked
+  without broad suppressions or weakening production compiler settings.

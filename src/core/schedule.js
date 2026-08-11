@@ -22,8 +22,11 @@ export function scheduleAlignedInterval(
 
   const timeoutToken = scheduler.setTimeout(() => {
     if (!active) return;
-    callback();
-    intervalToken = scheduler.setInterval(callback, intervalMs);
+    try {
+      callback();
+    } finally {
+      if (active) intervalToken = scheduler.setInterval(callback, intervalMs);
+    }
   }, initialDelayMs);
 
   return () => {

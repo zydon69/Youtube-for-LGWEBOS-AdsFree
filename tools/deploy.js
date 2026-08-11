@@ -1,11 +1,18 @@
 import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import pkgJson from '../package.json' with { type: 'json' };
+import {
+  PROJECT_ROOT,
+  artifactNames,
+  assertPackageMetadata
+} from './package-contract.js';
 
-const result = spawnSync(
-  'ares-install',
-  [`./youtube.leanback.v4_${pkgJson.version}_all.ipk`],
-  { stdio: 'inherit', shell: false }
-);
+assertPackageMetadata(pkgJson);
+const names = artifactNames(pkgJson.version);
+const result = spawnSync('ares-install', [join(PROJECT_ROOT, names.ipk)], {
+  stdio: 'inherit',
+  shell: false
+});
 
 if (result.error) {
   throw new Error(

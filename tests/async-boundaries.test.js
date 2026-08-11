@@ -34,6 +34,7 @@ test('polling rejects invalid bounds and probe failures', async () => {
     RangeError
   );
   assert.throws(() => pollUntil(() => true, { timeoutMs: -1 }), RangeError);
+  assert.throws(() => pollUntil(() => true, { initialDelayMs: 0 }), RangeError);
   await assert.rejects(
     pollUntil(() => {
       throw new Error('probe failed');

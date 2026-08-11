@@ -3,8 +3,9 @@ import { SPONSORBLOCK_CATEGORIES } from './sponsorblock-categories.js';
 export { SPONSORBLOCK_CATEGORIES } from './sponsorblock-categories.js';
 
 export const MAX_SPONSORBLOCK_RESPONSE_BYTES = 512 * 1024;
-export const MAX_SPONSORBLOCK_CANDIDATES = 64;
 export const MAX_SPONSORBLOCK_SEGMENTS = 256;
+export const MAX_SPONSORBLOCK_CANDIDATES = 512;
+const MAX_RAW_SEGMENTS_TO_INSPECT = MAX_SPONSORBLOCK_SEGMENTS * 8;
 const MAX_REASONABLE_VIDEO_SECONDS = 24 * 60 * 60;
 
 const categorySet = new Set(SPONSORBLOCK_CATEGORIES);
@@ -32,23 +33,42 @@ function normalizeDuration(duration) {
  * @returns {SponsorSegment[]}
  */
 export function parseSponsorBlockResponse(value, videoID, duration) {
-  if (!Array.isArray(value) || value.length > MAX_SPONSORBLOCK_CANDIDATES) {
-    return [];
-  }
+  if (!Array.isArray(value)) return [];
 
-  const match = value.find(
-    (entry) =>
+  let match = null;
+  const candidateCount = Math.min(value.length, MAX_SPONSORBLOCK_CANDIDATES);
+  for (let index = 0; index < candidateCount; index++) {
+    const entry = value[index];
+    if (
       isRecord(entry) &&
       entry.videoID === videoID &&
-      Array.isArray(entry.segments) &&
-      entry.segments.length <= MAX_SPONSORBLOCK_SEGMENTS
-  );
+      Array.isArray(entry.segments)
+    ) {
+      match = entry;
+      break;
+    }
+  }
   if (!match) return [];
+
+  return normalizeSponsorSegments(match.segments, duration);
+}
+
+/**
+ * Validate, sort, merge and duration-bound already correlated segments.
+ * @param {unknown} value
+ * @param {unknown} [duration]
+ * @returns {SponsorSegment[]}
+ */
+export function normalizeSponsorSegments(value, duration) {
+  if (!Array.isArray(value)) return [];
 
   const maxEnd = normalizeDuration(duration);
   /** @type {SponsorSegment[]} */
   const normalized = [];
-  for (const entry of match.segments) {
+  const rawCount = Math.min(value.length, MAX_RAW_SEGMENTS_TO_INSPECT);
+  for (let index = 0; index < rawCount; index++) {
+    if (normalized.length >= MAX_SPONSORBLOCK_SEGMENTS * 2) break;
+    const entry = value[index];
     if (!isRecord(entry) || typeof entry.category !== 'string') continue;
     if (!categorySet.has(entry.category) || !Array.isArray(entry.segment))
       continue;
@@ -76,14 +96,33 @@ export function parseSponsorBlockResponse(value, videoID, duration) {
   );
 
   /** @type {SponsorSegment[]} */
-  const deduplicated = [];
+  const compacted = [];
+  /** @type {Map<string, SponsorSegment>} */
+  const lastByCategory = new Map();
   const seen = new Set();
   for (const segment of normalized) {
     const key = `${segment.category}:${segment.segment[0]}:${segment.segment[1]}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    deduplicated.push(segment);
+    const previous = lastByCategory.get(segment.category);
+    if (previous && segment.segment[0] <= previous.segment[1]) {
+      previous.segment[1] = Math.max(previous.segment[1], segment.segment[1]);
+      continue;
+    }
+    compacted.push(segment);
+    lastByCategory.set(segment.category, segment);
+    if (compacted.length >= MAX_SPONSORBLOCK_SEGMENTS) break;
   }
 
-  return deduplicated;
+  return compacted;
+}
+
+/** @param {unknown} value */
+export function isValidSponsorBlockVideoID(value) {
+  return (
+    typeof value === 'string' &&
+    value.length >= 6 &&
+    value.length <= 64 &&
+    /^[\w-]+$/.test(value)
+  );
 }

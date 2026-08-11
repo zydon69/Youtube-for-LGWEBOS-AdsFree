@@ -2,12 +2,16 @@ import {
   ResolveCommandRegistry,
   type ResolveCommandHook,
   type ResolveCommandPayload
-} from './app_api';
+} from './app_api/index.ts';
+
+let disposed = false;
+let installedRegistry: ResolveCommandRegistry | null = null;
 
 function getPrefsCookie() {
   const prefix = 'PREF=';
   const raw = document.cookie
-    .split('; ')
+    .split(';')
+    .map((cookie) => cookie.trim())
     .find((value) => value.startsWith(prefix));
   return new URLSearchParams(raw?.slice(prefix.length) ?? '');
 }
@@ -27,6 +31,7 @@ function isLanguageSetting(value: unknown) {
 
 export async function installLanguageSettingsFix() {
   const registry = await ResolveCommandRegistry.getInstance();
+  if (disposed) return;
 
   const hook: ResolveCommandHook = (payload) => {
     const endpoint = payload.setClientSettingEndpoint;
@@ -38,7 +43,7 @@ export async function installLanguageSettingsFix() {
     if (languageSettings.length === 0) return payload;
 
     const prefs = getPrefsCookie();
-    const languageSetting = languageSettings.at(-1)!;
+    const languageSetting = languageSettings[languageSettings.length - 1]!;
     prefs.set('hl', languageSetting.stringValue as string);
     const expires = new Date();
     expires.setFullYear(expires.getFullYear() + 10);
@@ -52,22 +57,34 @@ export async function installLanguageSettingsFix() {
     const remainingSettings = endpoint.settingDatas.filter(
       (setting) => !isLanguageSetting(setting)
     );
-    const commands: ResolveCommandPayload[] = [];
+    const remainingPayload: ResolveCommandPayload = { ...payload };
     if (remainingSettings.length > 0) {
-      commands.push({
-        ...payload,
-        setClientSettingEndpoint: {
-          ...endpoint,
-          settingDatas: remainingSettings
-        }
-      });
+      remainingPayload.setClientSettingEndpoint = {
+        ...endpoint,
+        settingDatas: remainingSettings
+      };
+    } else {
+      delete remainingPayload.setClientSettingEndpoint;
     }
 
+    const commands: ResolveCommandPayload[] = [];
+    // A resolveCommand payload can contain independent sibling commands. Only
+    // consume the language endpoint; never discard those siblings.
+    if (Object.keys(remainingPayload).length > 0)
+      commands.push(remainingPayload);
     commands.push({ signalAction: { signal: 'RELOAD_PAGE' } });
     return commands;
   };
 
   registry.setHook('setClientSettingEndpoint', hook);
+  installedRegistry = registry;
+}
+
+export function dispose() {
+  if (disposed) return;
+  disposed = true;
+  installedRegistry?.removeHook('setClientSettingEndpoint');
+  installedRegistry = null;
 }
 
 void installLanguageSettingsFix().catch((error) => {

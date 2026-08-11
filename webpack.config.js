@@ -3,7 +3,13 @@ import { TransformAsyncModulesPlugin } from 'transform-async-modules-webpack-plu
 import TerserPlugin from 'terser-webpack-plugin';
 import pkgJson from './package.json' with { type: 'json' };
 import webpack from 'webpack';
-import { basename } from 'node:path';
+import { createRequire } from 'node:module';
+import { basename, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const projectRoot = fileURLToPath(new URL('.', import.meta.url));
+const { version: babelRuntimeVersion } = require('@babel/runtime/package.json');
 
 /**
  * @param input {Buffer<ArrayBufferLike>}
@@ -17,8 +23,8 @@ function transformAppInfo(input) {
   return JSON.stringify(appInfo, null, 2);
 }
 
-/** @type {(env: Record<string, string>, argv: { mode?: string }) => (import('webpack').Configuration)[]} */
-const makeConfig = (_env, argv) => [
+/** @type {(env: Record<string, string | boolean>, argv: { mode?: string }) => (import('webpack').Configuration)[]} */
+const makeConfig = (env = {}, argv) => [
   {
     /**
      * NOTE: Builds with devtool = 'eval' contain very big eval chunks which seem
@@ -27,15 +33,26 @@ const makeConfig = (_env, argv) => [
     devtool: argv.mode === 'development' ? 'inline-source-map' : false,
 
     output: {
-      clean: true
+      clean: true,
+      ...(typeof env.outputPath === 'string'
+        ? { path: resolve(env.outputPath) }
+        : {})
     },
 
     optimization: {
+      chunkIds: 'deterministic',
+      moduleIds: 'deterministic',
       /**
        * terser doesn't pickup browserlist config
        * See: https://github.com/terser/terser/issues/235
        */
       minimizer: [new TerserPlugin({ terserOptions: { ecma: 5 } })]
+    },
+
+    performance: {
+      hints: 'error',
+      maxAssetSize: 350 * 1024,
+      maxEntrypointSize: 350 * 1024
     },
 
     entry: {
@@ -102,6 +119,7 @@ const makeConfig = (_env, argv) => [
             }
           },
           { context: 'src', from: 'index.html' },
+          { from: 'LICENSE' },
           { from: 'THIRD_PARTY_NOTICES.md' }
         ]
       }),
@@ -110,8 +128,8 @@ const makeConfig = (_env, argv) => [
       // This plugin calls babel again to transform remove the `async` keyword usage after the fact.
       new TransformAsyncModulesPlugin({
         runtime: {
-          version: pkgJson.dependencies['@babel/runtime-corejs3'],
-          absoluteRuntime: './node_modules/@babel/runtime-corejs3'
+          version: babelRuntimeVersion,
+          absoluteRuntime: projectRoot
         }
       }),
       new webpack.DefinePlugin({

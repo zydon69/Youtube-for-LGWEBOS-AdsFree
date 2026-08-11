@@ -31,10 +31,32 @@ const nativeFetch = async (resource) => {
     : '[]';
   return new window.Response(body, {
     status: 200,
-    headers: { 'content-type': 'application/json' }
+    headers: {
+      'content-type': 'application/json',
+      'content-length': String(body.length)
+    }
   });
 };
 window.fetch = nativeFetch;
+class MockImage {
+  width = 1;
+  height = 1;
+  naturalHeight = 180;
+  /** @type {(() => void) | null} */
+  onload = null;
+  /** @type {(() => void) | null} */
+  onerror = null;
+
+  /** @param {string} value */
+  set src(value) {
+    this.currentSrc = value;
+    window.setTimeout(() => this.onload?.(), 0);
+  }
+}
+Object.defineProperty(window, 'Image', {
+  configurable: true,
+  value: MockImage
+});
 const nativeJSONParse = window.JSON.parse;
 
 /** @type {Array<{ command: Record<string, unknown>, extra: unknown }>} */
@@ -88,6 +110,7 @@ function createVideo() {
 }
 
 const initialVideo = createVideo();
+initialVideo.style.visibility = 'visible';
 const initialControls = window.document.createElement('div');
 initialControls.setAttribute('idomkey', 'controls');
 window.document.body.append(initialVideo, initialControls);
@@ -174,6 +197,18 @@ try {
     initialControls.querySelector('.ytaf-ui-watchControl-overlayMessage')
   );
 
+  const thumbnail = window.document.createElement('ytlr-thumbnail-details');
+  const originalThumbnail =
+    'url("https://i.ytimg.com/vi/smoke-video/mqdefault.jpg")';
+  thumbnail.style.backgroundImage = originalThumbnail;
+  window.document.body.appendChild(thumbnail);
+  const thumbnailCheckbox = findCheckbox(panel, 'Upgrade thumbnail quality');
+  dispatchCheckboxChange(thumbnailCheckbox, true);
+  await new Promise((resolve) => window.setTimeout(resolve, 30));
+  assert.match(thumbnail.style.backgroundImage, /sddefault/);
+  dispatchCheckboxChange(thumbnailCheckbox, false);
+  assert.equal(thumbnail.style.backgroundImage, originalThumbnail);
+
   const nativeQuerySelector = window.document.querySelector.bind(
     window.document
   );
@@ -209,7 +244,7 @@ try {
   initialVideo.replaceWith(replacementVideo);
   initialControls.replaceWith(replacementControls);
   await new Promise((resolve) => window.setTimeout(resolve, 120));
-  assert.equal(initialVideo.style.visibility, '');
+  assert.equal(initialVideo.style.visibility, 'visible');
   assert.equal(replacementVideo.style.visibility, 'hidden');
   assert.ok(
     replacementControls.querySelector('.ytaf-ui-watchControl-overlayMessage')
@@ -233,7 +268,3 @@ try {
 } finally {
   await window.close();
 }
-
-// Some legacy-polyfill timers are intentionally long-lived in production.
-// The isolated smoke-test process has completed all assertions at this point.
-process.exit(0);

@@ -1,26 +1,52 @@
-import {
-  CustomEventTarget,
-  TypedCustomEvent,
-  type EventMapOf
-} from '../custom-event-target';
-import { getPlayer } from './helpers';
-import type { PlayerStateObject, VideoID, YTPlayer } from './yt-api';
+import { CustomEventTarget, TypedCustomEvent } from '../custom-event-target.ts';
+import { resolveActiveVideo } from '../core/active-media-resolver.ts';
+import { findCapablePlayer, getCapablePlayer, isYTPlayer } from './helpers.ts';
+import type {
+  PlayerStateKeys,
+  PlayerStateObject,
+  VideoID,
+  YTPlayer
+} from './yt-api.ts';
+
+const PLAYER_STATE_KEYS = [
+  'isBuffering',
+  'isCued',
+  'isDomPaused',
+  'isEnded',
+  'isError',
+  'isOrWillBePlaying',
+  'isPaused',
+  'isPlaying',
+  'isSeeking',
+  'isUiSeeking',
+  'isUnstarted'
+] as const satisfies readonly PlayerStateKeys[];
+
+type PlayerStateSnapshot = Partial<PlayerStateObject>;
+
+function snapshotPlayerState(value: unknown): PlayerStateSnapshot {
+  if (value === null || typeof value !== 'object') return {};
+  const source = value as Partial<PlayerStateObject>;
+  const snapshot: PlayerStateSnapshot = {};
+  for (const key of PLAYER_STATE_KEYS) {
+    const state = source[key];
+    if (typeof state === 'boolean') snapshot[key] = state;
+  }
+  return snapshot;
+}
 
 function diffPlayerState(
-  prev: PlayerStateObject | null,
-  next: PlayerStateObject
+  previous: PlayerStateSnapshot | null,
+  next: PlayerStateSnapshot
 ) {
-  if (!prev) return next;
-
-  const changes: Partial<PlayerStateObject> = {};
-
-  for (const k in next) {
-    const key = k as keyof PlayerStateObject;
-    if (next[key] !== prev[key]) {
-      changes[key] = next[key];
+  if (!previous) return next;
+  const changes: PlayerStateSnapshot = {};
+  for (const key of PLAYER_STATE_KEYS) {
+    const state = next[key];
+    if (typeof state === 'boolean' && state !== previous[key]) {
+      changes[key] = state;
     }
   }
-
   return changes;
 }
 
@@ -29,91 +55,144 @@ interface EventMap {
   playbackStart: TypedCustomEvent<undefined, unknown, 'playbackStart'>;
 }
 
-export enum PlayerMode {
-  PREVIEW,
-  SHORTS,
-  NORMAL
-}
+export const PlayerMode = Object.freeze({
+  PREVIEW: 0,
+  SHORTS: 1,
+  NORMAL: 2
+} as const);
 
-class PlayerManager
-  extends CustomEventTarget<EventMap>
-  implements PlayerManager
-{
-  #player;
+export type PlayerMode = (typeof PlayerMode)[keyof typeof PlayerMode];
+
+export class PlayerManager extends CustomEventTarget<EventMap> {
+  #player: YTPlayer;
   #lastVideoID: VideoID | null = null;
-  #lastPlayerState: PlayerStateObject | null = null;
-  #synchronizationToken: number;
+  #lastPlayerState: PlayerStateSnapshot | null = null;
+  #synchronizationToken: number | null = null;
+  #destroyed = false;
 
   #handleNewVideo(videoID: VideoID) {
-    console.debug('[PlayerManager] new video', videoID);
     this.dispatchEvent(new TypedCustomEvent('newVideo', { detail: videoID }));
   }
 
   #handlePlayerStateChange = () => {
-    const current = this.#player.getPlayerStateObject();
-    const diff = diffPlayerState(this.#lastPlayerState, current);
-    this.#lastPlayerState = current;
+    if (this.#destroyed) return;
+    try {
+      const current = snapshotPlayerState(this.#player.getPlayerStateObject());
+      const diff = diffPlayerState(this.#lastPlayerState, current);
+      this.#lastPlayerState = current;
 
-    const currentVideoID = this.currentVideoID;
-    if (!currentVideoID) {
-      this.#lastVideoID = null;
-    } else if (this.#lastVideoID !== currentVideoID) {
-      this.#handleNewVideo(currentVideoID);
-      this.#lastVideoID = currentVideoID;
-    }
+      const currentVideoID = this.currentVideoID;
+      let startedNewVideo = false;
+      if (!currentVideoID) {
+        this.#lastVideoID = null;
+      } else if (this.#lastVideoID !== currentVideoID) {
+        this.#handleNewVideo(currentVideoID);
+        this.#lastVideoID = currentVideoID;
+        startedNewVideo = true;
+      }
 
-    if (Object.keys(diff).length > 0) {
-      console.debug('[PlayerManager] player state changed', { diff });
-    }
-
-    if (diff.isPlaying === true) {
-      this.dispatchEvent(
-        new TypedCustomEvent<undefined, 'playbackStart'>('playbackStart')
-      );
+      if (
+        diff.isPlaying === true ||
+        (startedNewVideo && current.isPlaying === true)
+      ) {
+        this.dispatchEvent(
+          new TypedCustomEvent<undefined, 'playbackStart'>('playbackStart')
+        );
+      }
+    } catch (error) {
+      console.warn('[player] Unable to read player state', error);
     }
   };
 
   constructor(player: YTPlayer) {
     super();
+    if (!isYTPlayer(player)) {
+      throw new TypeError('YouTube player capabilities are incomplete');
+    }
     this.#player = player;
-
-    player.addEventListener('onStateChange', this.#handlePlayerStateChange);
-    this.#synchronizationToken = window.setInterval(
-      () => this.#synchronizePlayer(),
-      2_000
-    );
+    try {
+      player.addEventListener('onStateChange', this.#handlePlayerStateChange);
+      this.#synchronizationToken = window.setInterval(
+        () => this.#synchronizePlayer(),
+        2_000
+      );
+    } catch (error) {
+      try {
+        player.removeEventListener(
+          'onStateChange',
+          this.#handlePlayerStateChange
+        );
+      } catch (rollbackError) {
+        console.warn(
+          '[player] Unable to roll back player listener',
+          rollbackError
+        );
+      }
+      throw error;
+    }
   }
 
   #synchronizePlayer() {
-    const candidate = document.querySelector('.html5-video-player');
+    if (this.#destroyed) return;
+    const candidate = findCapablePlayer();
     if (!candidate || candidate === this.#player) return;
-    if (!(candidate instanceof HTMLElement)) return;
 
-    this.#player.removeEventListener(
-      'onStateChange',
-      this.#handlePlayerStateChange
-    );
-    this.#player = candidate as YTPlayer;
+    try {
+      candidate.addEventListener(
+        'onStateChange',
+        this.#handlePlayerStateChange
+      );
+    } catch (error) {
+      console.warn('[player] Unable to observe replacement player', error);
+      return;
+    }
+
+    try {
+      this.#player.removeEventListener(
+        'onStateChange',
+        this.#handlePlayerStateChange
+      );
+    } catch (error) {
+      console.warn('[player] Unable to detach previous player', error);
+      try {
+        candidate.removeEventListener(
+          'onStateChange',
+          this.#handlePlayerStateChange
+        );
+      } catch (rollbackError) {
+        console.warn(
+          '[player] Unable to roll back replacement listener',
+          rollbackError
+        );
+      }
+      return;
+    }
+
+    this.#player = candidate;
     this.#lastPlayerState = null;
     this.#lastVideoID = null;
-    this.#player.addEventListener(
-      'onStateChange',
-      this.#handlePlayerStateChange
-    );
     this.#handlePlayerStateChange();
   }
 
   get currentVideoID(): VideoID | null {
-    return this.#player.getVideoData().video_id || null;
+    try {
+      const videoID = this.#player.getVideoData()?.video_id;
+      return typeof videoID === 'string' && videoID.length > 0 ? videoID : null;
+    } catch (error) {
+      console.warn('[player] Unable to read video metadata', error);
+      return null;
+    }
   }
 
   get playerMode() {
-    if (this.#player.isInline()) return PlayerMode.PREVIEW;
-
-    if (this.#player.getVideoStats().el === 'shortspage') {
-      return PlayerMode.SHORTS;
+    try {
+      if (this.#player.isInline()) return PlayerMode.PREVIEW;
+      if (this.#player.getVideoStats()?.el === 'shortspage') {
+        return PlayerMode.SHORTS;
+      }
+    } catch (error) {
+      console.warn('[player] Unable to read player mode', error);
     }
-
     return PlayerMode.NORMAL;
   }
 
@@ -122,32 +201,78 @@ class PlayerManager
     return this.#player;
   }
 
+  get activeVideo(): HTMLVideoElement | null {
+    try {
+      return resolveActiveVideo(
+        this.#player,
+        this.#player.ownerDocument ?? document
+      );
+    } catch (error) {
+      console.warn('[player] Unable to resolve active video', error);
+      return null;
+    }
+  }
+
   destroy() {
-    window.clearInterval(this.#synchronizationToken);
-    this.#player.removeEventListener(
-      'onStateChange',
-      this.#handlePlayerStateChange
-    );
+    if (this.#destroyed) return;
+    this.#destroyed = true;
+    if (this.#synchronizationToken !== null) {
+      window.clearInterval(this.#synchronizationToken);
+      this.#synchronizationToken = null;
+    }
+    try {
+      this.#player.removeEventListener(
+        'onStateChange',
+        this.#handlePlayerStateChange
+      );
+    } catch (error) {
+      console.warn('[player] Unable to detach player during disposal', error);
+    }
+    this.clearEventListeners();
+    if (instance === this) instance = null;
   }
 }
 
 let instance: PlayerManager | null = null;
 let instancePromise: Promise<PlayerManager> | null = null;
+let initializationController: AbortController | null = null;
+let instanceGeneration = 0;
 
 export async function getPlayerManager(): Promise<PlayerManager> {
   if (instance) return instance;
   if (!instancePromise) {
-    instancePromise = getPlayer()
+    const generation = instanceGeneration;
+    const controller =
+      typeof AbortController === 'function' ? new AbortController() : null;
+    initializationController = controller;
+    const pending = getCapablePlayer(
+      controller ? { signal: controller.signal } : {}
+    )
       .then((player) => {
+        if (generation !== instanceGeneration) {
+          const error = new Error('Player manager initialization cancelled');
+          error.name = 'AbortError';
+          throw error;
+        }
         instance ??= new PlayerManager(player);
         return instance;
       })
       .finally(() => {
-        instancePromise = null;
+        if (instancePromise === pending) instancePromise = null;
+        if (initializationController === controller) {
+          initializationController = null;
+        }
       });
+    instancePromise = pending;
   }
-
   return instancePromise;
 }
 
-export type { PlayerManager };
+export function destroyPlayerManager() {
+  instanceGeneration++;
+  initializationController?.abort();
+  initializationController = null;
+  instancePromise = null;
+  instance?.destroy();
+  instance = null;
+}
