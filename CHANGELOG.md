@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.5.5] - 2026/08/11
+
+### Security
+
+- Require explicit SponsorBlock opt-in and bound all external responses.
+- Remove the remote Google Fonts request and restrict runtime network origins.
+- Add privacy, threat-model, vulnerability-reporting, SBOM and release controls.
+
+### Fixed
+
+- Replace the incompatible native `EventTarget` constructor on legacy webOS.
+- Rebind replaced YouTube/player instances and harden all DOM observers.
+- Preserve multi-command payloads, settings state and automatic video quality.
+- Make IPK builds deterministic, clean, allowlisted and self-verifying.
+
+### Changed
+
+- Enable strict type checking for JavaScript and TypeScript application code.
+- Add production-bundle smoke tests and expanded security regression tests.
+- Rename Audio-Only mode to Screen-hidden mode to reflect its actual behavior.
+
 ## [0.5.4] - 2026/08/08
 
 ### Security

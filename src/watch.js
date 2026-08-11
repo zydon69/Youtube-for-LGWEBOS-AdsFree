@@ -1,97 +1,107 @@
 import { configRead, configAddChangeListener } from './config';
 import './watch.css';
 import { scheduleAlignedInterval } from './core/schedule';
-import { requireElement } from './player_api/helpers';
 
 class Watch {
+  /** @type {HTMLDivElement} */
   #watch;
+  /** @type {(() => void) | undefined} */
   #stopClock;
-  #attrChanges;
-  #destroyed = false;
-  #PLAYER_SELECTOR = 'ytlr-watch-default';
+  /** @type {MutationObserver | undefined} */
+  #playerObserver;
+  /** @type {MutationObserver} */
+  #documentObserver;
+  /** @type {HTMLElement | null} */
+  #player = null;
+  /** @type {number | null} */
+  #syncToken = null;
 
   constructor() {
-    this.createElement();
-    this.startClock();
-    this.playerEvents();
-  }
-
-  createElement() {
     this.#watch = document.createElement('div');
     this.#watch.className = 'webOs-watch';
     document.body.appendChild(this.#watch);
+    this.#startClock();
+    this.#documentObserver = new MutationObserver(() => this.#queueSync());
+    this.#documentObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    this.#synchronizePlayer();
   }
 
-  startClock() {
-    const nextSeg = (60 - new Date().getSeconds()) * 1000;
-
+  #startClock() {
+    const now = new Date();
+    const nextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
     const formatter = new Intl.DateTimeFormat(navigator.language, {
       hour: 'numeric',
       minute: 'numeric'
     });
-
     const setTime = () => {
-      if (this.#destroyed) return;
       this.#watch.innerText = formatter.format(new Date());
     };
-
     setTime();
-    this.#stopClock = scheduleAlignedInterval(setTime, nextSeg, 60_000);
+    this.#stopClock = scheduleAlignedInterval(setTime, nextMinute, 60_000);
   }
 
-  playerAppear(video) {
-    this.changeVisibility(video);
-    this.playerObserver(video);
+  #queueSync() {
+    if (this.#syncToken !== null) return;
+    this.#syncToken = window.setTimeout(() => {
+      this.#syncToken = null;
+      this.#synchronizePlayer();
+    }, 100);
   }
 
-  changeVisibility(video) {
-    const focused = video.getAttribute('hybridnavfocusable') === 'true';
-    this.#watch.style.display = focused ? 'none' : 'block';
-  }
-
-  async playerEvents() {
-    try {
-      const player = await requireElement(this.#PLAYER_SELECTOR, HTMLElement);
-      if (!this.#destroyed) this.playerAppear(player);
-    } catch (error) {
-      if (!this.#destroyed) {
-        console.warn('[watch] Player did not become available', error);
-      }
-    }
-  }
-
-  playerObserver(node) {
-    this.#attrChanges = new MutationObserver(() => {
-      this.changeVisibility(node);
-    });
-
-    this.#attrChanges.observe(node, {
+  #synchronizePlayer() {
+    const candidate = document.querySelector('ytlr-watch-default');
+    const player = candidate instanceof HTMLElement ? candidate : null;
+    if (player === this.#player) return;
+    this.#playerObserver?.disconnect();
+    this.#player = player;
+    if (!player) return;
+    this.#changeVisibility();
+    this.#playerObserver = new MutationObserver(() => this.#changeVisibility());
+    this.#playerObserver.observe(player, {
       attributes: true,
       attributeFilter: ['hybridnavfocusable']
     });
   }
 
+  #changeVisibility() {
+    const focused = this.#player?.getAttribute('hybridnavfocusable') === 'true';
+    this.#watch.style.display = focused ? 'none' : 'block';
+  }
+
   destroy() {
-    this.#destroyed = true;
     this.#stopClock?.();
-    this.#watch?.remove();
-    this.#attrChanges?.disconnect();
+    if (this.#syncToken !== null) window.clearTimeout(this.#syncToken);
+    this.#watch.remove();
+    this.#playerObserver?.disconnect();
+    this.#documentObserver.disconnect();
   }
 }
 
+/** @type {Watch | null} */
 let watchInstance = null;
 
+/** @param {boolean} show */
 function toggleWatch(show) {
-  if (show) {
-    watchInstance = watchInstance ? watchInstance : new Watch();
-  } else {
-    watchInstance?.destroy();
+  if (show && !watchInstance) watchInstance = new Watch();
+  else if (!show && watchInstance) {
+    watchInstance.destroy();
     watchInstance = null;
   }
 }
 
-toggleWatch(configRead('showWatch'));
+function initializeWatch() {
+  toggleWatch(configRead('showWatch'));
+}
 
-configAddChangeListener('showWatch', (evt) => {
-  toggleWatch(evt.detail.newValue);
-});
+if (document.body) initializeWatch();
+else {
+  document.addEventListener('DOMContentLoaded', initializeWatch, {
+    once: true
+  });
+}
+configAddChangeListener('showWatch', (event) =>
+  toggleWatch(event.detail.newValue)
+);

@@ -1,116 +1,100 @@
-type TypedEventPartial<T extends EventTarget, U> = {
+/**
+ * Small EventTarget-compatible dispatcher for legacy webOS engines.
+ *
+ * Native EventTarget was not constructible on the Safari/Chromium versions
+ * shipped by older TVs. Keeping the dispatcher local also avoids patching DOM
+ * prototypes and gives every feature an explicit lifecycle.
+ */
+
+interface EmptyEventMap {}
+
+interface EventLike {
+  readonly type: string;
+  readonly defaultPrevented?: boolean;
+  currentTarget?: unknown;
+}
+
+type Listener<E> =
+  ((event: E) => void) | { handleEvent(event: E): void } | null;
+
+export interface TypedCustomEvent<D, T = unknown, U extends string = string> {
+  readonly type: U;
+  readonly detail: D;
+  readonly cancelable: boolean;
+  readonly defaultPrevented: boolean;
+  readonly currentTarget: T | null;
+  preventDefault(): void;
+}
+
+class LegacyCustomEvent<
+  D,
+  U extends string = string
+> implements TypedCustomEvent<D, unknown, U> {
+  readonly type: U;
+  readonly detail: D;
+  readonly cancelable: boolean;
+  defaultPrevented = false;
+  currentTarget: unknown = null;
+
+  constructor(type: U, options: { detail?: D; cancelable?: boolean } = {}) {
+    this.type = type;
+    this.detail = options.detail as D;
+    this.cancelable = options.cancelable === true;
+  }
+
+  preventDefault() {
+    if (this.cancelable) this.defaultPrevented = true;
+  }
+}
+
+export const TypedCustomEvent = LegacyCustomEvent;
+
+export type TypedEvent<T, U> = {
   readonly currentTarget: T | null;
   readonly type: U;
 };
 
-type BaseTypedEvent<T extends EventTarget, E extends Event, U> = E &
-  TypedEventPartial<T, U>;
-
-type EventInstanceType<T, O> = T extends abstract new (
-  type: string,
-  options?: O
-) => infer R
-  ? R
-  : never;
-
-type EventOptionsType<T> = T extends new (
-  type: string,
-  options?: infer O
-) => Event
-  ? O
-  : never;
-
-export function asTypedEvent<
-  const E extends Event,
-  const A = EventInit
->(event: { new (type: string, options?: A): E }) {
-  return event as {
-    new <
-      T extends EventTarget,
-      const U,
-      const O extends EventOptionsType<typeof event>
-    >(
-      type: U,
-      options?: O
-    ): BaseTypedEvent<T, EventInstanceType<typeof event, O>, U>;
-    prototype: BaseTypedEvent<EventTarget, E, string>;
-  };
-}
-
-export type TypedEvent<T extends EventTarget, U> = BaseTypedEvent<T, Event, U>;
-export const TypedEvent = asTypedEvent(Event);
-
-export type TypedCustomEvent<
-  D,
-  T extends EventTarget,
-  U = string
-> = BaseTypedEvent<T, CustomEvent<D>, U>;
-
-export const TypedCustomEvent = CustomEvent as {
-  new <const U extends string, const D = undefined>(
-    type: U,
-    eventInitDict?: CustomEventInit<D>
-  ): TypedCustomEvent<D, EventTarget, U>;
-
-  prototype: BaseTypedEvent<EventTarget, CustomEvent<unknown>, string>;
-};
-
-interface EmptyEventMap {}
-
-type EventMapValue<
-  T extends EmptyEventMap,
-  K extends keyof T & string
-> = T[K] extends Event ? T[K] : never;
-
-interface EventListener<
-  Self extends EventTarget,
-  T extends EmptyEventMap,
-  EventName extends keyof T
+export class CustomEventTarget<
+  T extends EmptyEventMap & { [K in keyof T]: EventLike }
 > {
-  (this: Self, evt: T[EventName] & TypedEvent<Self, EventName>): void;
-}
+  readonly #listeners: Partial<{
+    [K in keyof T]: Array<Listener<T[K]>>;
+  }> = {};
 
-interface EventListenerObject<
-  Self extends EventTarget,
-  T extends EmptyEventMap,
-  EventName extends keyof T
-> {
-  handleEvent: EventListener<Self, T, EventName>;
-}
-
-type EventListenerArg<
-  Self extends EventTarget,
-  T extends EmptyEventMap,
-  EventName extends keyof T
-> =
-  | EventListener<Self, T, EventName>
-  | EventListenerObject<Self, T, EventName>
-  | null;
-
-interface CustomEventTarget<T extends EmptyEventMap> {
   addEventListener<K extends keyof T & string>(
     type: K,
-    callback: EventListenerArg<this, T, K>,
-    options?: boolean | AddEventListenerOptions
-  ): void;
+    callback: Listener<T[K]>
+  ) {
+    if (!callback) return;
+    const listeners = (this.#listeners[type] ??= []);
+    if (!listeners.includes(callback)) listeners.push(callback);
+  }
 
   removeEventListener<K extends keyof T & string>(
     type: K,
-    callback: EventListenerArg<this, T, K>,
-    options?: boolean | EventListenerOptions
-  ): void;
+    callback: Listener<T[K]>
+  ) {
+    const listeners = this.#listeners[type];
+    if (!listeners || !callback) return;
+    const index = listeners.indexOf(callback);
+    if (index >= 0) listeners.splice(index, 1);
+  }
 
-  dispatchEvent<K extends keyof T & string>(
-    event: EventMapValue<T, K>
-  ): boolean;
+  dispatchEvent<K extends keyof T & string>(event: T[K]) {
+    const listeners = [...(this.#listeners[event.type as K] ?? [])];
+    const mutableEvent = event as T[K] & EventLike;
+    mutableEvent.currentTarget = this;
+
+    try {
+      for (const listener of listeners) {
+        if (typeof listener === 'function') listener.call(this, event);
+        else listener?.handleEvent(mutableEvent);
+      }
+    } finally {
+      mutableEvent.currentTarget = null;
+    }
+    return mutableEvent.defaultPrevented !== true;
+  }
 }
 
-export const CustomEventTarget = EventTarget as {
-  new <T extends EmptyEventMap>(): CustomEventTarget<T>;
-  prototype: CustomEventTarget<EmptyEventMap>;
-};
-
-export type EventMapOf<T> =
-  T extends CustomEventTarget<infer U>
-    ? { [K in keyof U]: U[K] & TypedEvent<T, K> }
-    : never;
+export type EventMapOf<T> = T extends CustomEventTarget<infer U> ? U : never;

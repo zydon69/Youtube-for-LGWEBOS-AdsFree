@@ -1,49 +1,26 @@
 import { normalizeConfig } from './core/config-schema.js';
+import { SPONSORBLOCK_CATEGORY_OPTIONS } from './core/sponsorblock-categories.js';
+import { CustomEventTarget, TypedCustomEvent } from './custom-event-target.ts';
 
-const CONFIG_KEY = 'ytaf-configuration';
+const CONFIG_KEY = 'ytaf-configuration-v2';
+const LEGACY_CONFIG_KEY = 'ytaf-configuration';
 
 /** @typedef {{ key: string, newValue: boolean, oldValue: boolean }} ConfigChangeDetail */
+/** @typedef {{ default: boolean, desc: string }} ConfigOption */
 
-const configOptions = new Map([
+/** @type {Array<[string, ConfigOption]>} */
+const optionEntries = [
   ['enableAdBlock', { default: true, desc: 'Enable ad blocking' }],
   ['upgradeThumbnails', { default: false, desc: 'Upgrade thumbnail quality' }],
   [
     'removeShorts',
     { default: false, desc: 'Remove Shorts from subscriptions' }
   ],
-  ['enableSponsorBlock', { default: true, desc: 'Enable SponsorBlock' }],
   [
-    'enableSponsorBlockSponsor',
-    { default: true, desc: 'Skip sponsor segments' }
-  ],
-  ['enableSponsorBlockIntro', { default: true, desc: 'Skip intro segments' }],
-  ['enableSponsorBlockOutro', { default: true, desc: 'Skip outro segments' }],
-  [
-    'enableSponsorBlockInteraction',
-    {
-      default: true,
-      desc: 'Skip interaction reminder segments'
-    }
-  ],
-  [
-    'enableSponsorBlockSelfPromo',
-    {
-      default: true,
-      desc: 'Skip self promotion segments'
-    }
-  ],
-  [
-    'enableSponsorBlockMusicOfftopic',
-    {
-      default: true,
-      desc: 'Skip non-music segments in music videos'
-    }
-  ],
-  [
-    'enableSponsorBlockPreview',
+    'enableSponsorBlock',
     {
       default: false,
-      desc: 'Skip recaps and previews'
+      desc: 'Enable SponsorBlock (sends a hashed video prefix to sponsor.ajay.app)'
     }
   ],
   [
@@ -81,9 +58,19 @@ const configOptions = new Map([
       desc: 'Bypass initial account selection on startup'
     }
   ]
-]);
+];
+for (const option of SPONSORBLOCK_CATEGORY_OPTIONS) {
+  optionEntries.push([
+    option.configKey,
+    { default: option.default, desc: option.description }
+  ]);
+}
+
+/** @type {Map<string, ConfigOption>} */
+export const configOptions = new Map(optionEntries);
 
 const defaultConfig = (() => {
+  /** @type {Record<string, boolean>} */
   const ret = {};
   for (const [k, v] of configOptions) {
     ret[k] = v.default;
@@ -91,11 +78,11 @@ const defaultConfig = (() => {
   return ret;
 })();
 
-/** @type {Record<string, DocumentFragment>} as const */
+/** @type {Map<string, CustomEventTarget<any>>} */
 const configFrags = (() => {
-  const ret = {};
+  const ret = new Map();
   for (const k of configOptions.keys()) {
-    ret[k] = new DocumentFragment();
+    ret.set(k, new CustomEventTarget());
   }
   return ret;
 })();
@@ -104,6 +91,17 @@ function loadStoredConfig() {
   try {
     const storage = window.localStorage.getItem(CONFIG_KEY);
     if (storage === null) {
+      const legacyStorage = window.localStorage.getItem(LEGACY_CONFIG_KEY);
+      if (legacyStorage !== null) {
+        const migrated = normalizeConfig(
+          JSON.parse(legacyStorage),
+          defaultConfig
+        );
+        // Previous releases enabled the third-party service by default. An
+        // upgrade must require a fresh, explicit opt-in.
+        migrated.enableSponsorBlock = false;
+        return migrated;
+      }
       console.info('Config not set; using defaults.');
       return normalizeConfig(null, defaultConfig);
     }
@@ -117,26 +115,32 @@ function loadStoredConfig() {
 
 const localConfig = loadStoredConfig();
 
+/** @param {string} key */
 function configExists(key) {
   return configOptions.has(key);
 }
 
+/** @param {string} key */
 export function configGetDesc(key) {
   if (!configExists(key)) {
     throw new Error('tried to get desc for unknown config key: ' + key);
   }
 
-  return configOptions.get(key).desc;
+  return configOptions.get(key)?.desc ?? '';
 }
 
+/** @param {string} key */
 export function configRead(key) {
   if (!configExists(key)) {
     throw new Error('tried to read unknown config key: ' + key);
   }
 
-  return localConfig[key];
+  const value = localConfig[key];
+  if (value === undefined) throw new Error(`missing config value: ${key}`);
+  return value;
 }
 
+/** @param {string} key @param {boolean} value */
 export function configWrite(key, value) {
   if (!configExists(key)) {
     throw new Error('tried to write unknown config key: ' + key);
@@ -146,6 +150,7 @@ export function configWrite(key, value) {
   }
 
   const oldValue = localConfig[key];
+  if (oldValue === undefined) throw new Error(`missing config value: ${key}`);
 
   console.info('Changing key', key, 'from', oldValue, 'to', value);
   localConfig[key] = value;
@@ -158,8 +163,8 @@ export function configWrite(key, value) {
     });
   }
 
-  configFrags[key].dispatchEvent(
-    new CustomEvent('ytafConfigChange', {
+  configFrags.get(key)?.dispatchEvent(
+    new TypedCustomEvent('ytafConfigChange', {
       detail: { key, newValue: value, oldValue }
     })
   );
@@ -174,7 +179,8 @@ export function configAddChangeListener(key, callback) {
   if (!configExists(key)) {
     throw new Error('tried to observe unknown config key: ' + key);
   }
-  const frag = configFrags[key];
+  const frag = configFrags.get(key);
+  if (!frag) throw new Error(`missing config event target: ${key}`);
 
   frag.addEventListener('ytafConfigChange', callback);
 }
@@ -188,7 +194,8 @@ export function configRemoveChangeListener(key, callback) {
   if (!configExists(key)) {
     throw new Error('tried to stop observing unknown config key: ' + key);
   }
-  const frag = configFrags[key];
+  const frag = configFrags.get(key);
+  if (!frag) throw new Error(`missing config event target: ${key}`);
 
   frag.removeEventListener('ytafConfigChange', callback);
 }

@@ -20,7 +20,26 @@ function clearQualityPolling() {
 }
 
 function getMaxQualityLabel(player: PlayerManager['player']) {
-  return player.getAvailableQualityData()[0]?.qualityLabel;
+  return player
+    .getAvailableQualityData()
+    .filter(({ isPlayable, qualityLabel }) => isPlayable && qualityLabel)
+    .sort(
+      (left, right) =>
+        qualityRank(right.qualityLabel) - qualityRank(left.qualityLabel)
+    )[0]?.qualityLabel;
+}
+
+function qualityRank(label: string) {
+  const verticalPixels = Number(label.match(/\d+/)?.[0] ?? 0);
+  return verticalPixels + (/\b4k\b/i.test(label) ? 2160 : 0);
+}
+
+function restoreAutomaticQuality(manager: PlayerManager) {
+  try {
+    manager.player.setPlaybackQualityRange('auto', 'auto');
+  } catch (error) {
+    console.warn('[video-quality] Unable to restore automatic quality', error);
+  }
 }
 
 function notifyPlaybackQuality(manager: PlayerManager) {
@@ -59,10 +78,15 @@ function setPlaybackQuality(this: PlayerManager) {
       return;
     }
 
-    const currentQuality = this.player.getPlaybackQualityLabel();
-    if (currentQuality && currentQuality !== previousQuality) {
+    try {
+      const currentQuality = this.player.getPlaybackQualityLabel();
+      if (currentQuality && currentQuality !== previousQuality) {
+        clearQualityPolling();
+        notifyPlaybackQuality(this);
+      }
+    } catch (error) {
       clearQualityPolling();
-      notifyPlaybackQuality(this);
+      console.warn('[video-quality] Quality polling failed', error);
     }
   }, 100);
 
@@ -99,6 +123,8 @@ async function installVideoQuality() {
     armQualitySelection(manager);
     if (event.detail.newValue && manager.currentVideoID) {
       setPlaybackQuality.call(manager);
+    } else if (!event.detail.newValue) {
+      restoreAutomaticQuality(manager);
     }
   });
 }

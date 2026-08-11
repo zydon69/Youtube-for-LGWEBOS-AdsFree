@@ -8,6 +8,7 @@ import {
   stat,
   writeFile
 } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -17,6 +18,54 @@ import pkgJson from '../package.json' with { type: 'json' };
 
 const projectRoot = new URL('../', import.meta.url);
 const distDir = new URL('../dist/', import.meta.url);
+const SOURCE_DATE = new Date('2000-01-01T00:00:00.000Z');
+const EXPECTED_DIST_FILES = new Set([
+  'appinfo.json',
+  'bgImage.png',
+  'extraLargeIcon.png',
+  'icon.png',
+  'icon.svg',
+  'imageForRecents.png',
+  'index.html',
+  'index.js',
+  'largeIcon.png',
+  'mediumLargeIcon.png',
+  'playIcon.png',
+  'splashBackground-v1.png',
+  'THIRD_PARTY_NOTICES.md',
+  'webOSUserScripts/userScript.js',
+  'webOSUserScripts/userScript.js.LICENSE.txt'
+]);
+
+/** @param {string} path @param {string} prefix @returns {Promise<string[]>} */
+async function listRelativeFiles(path, prefix = '') {
+  const entries = await readdir(path, { withFileTypes: true });
+  const nestedFiles = await Promise.all(
+    entries.map(async (entry) => {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(path, entry.name);
+      if (entry.isDirectory()) {
+        return listRelativeFiles(absolutePath, relativePath);
+      }
+      if (entry.isFile()) return [relativePath];
+      throw new Error(`Unsupported dist entry: ${relativePath}`);
+    })
+  );
+  return nestedFiles.flat().sort();
+}
+
+async function validateDist() {
+  const files = await listRelativeFiles(distDir.pathname);
+  const unexpected = files.filter((file) => !EXPECTED_DIST_FILES.has(file));
+  const missing = [...EXPECTED_DIST_FILES].filter(
+    (file) => !files.includes(file)
+  );
+  if (unexpected.length || missing.length) {
+    throw new Error(
+      `dist content mismatch; unexpected=[${unexpected.join(', ')}], missing=[${missing.join(', ')}]`
+    );
+  }
+}
 
 /** @param {string} path @returns {Promise<number>} */
 async function directorySize(path) {
@@ -54,6 +103,7 @@ function createArMember(name, data) {
 }
 
 async function createPackage() {
+  await validateDist();
   const appInfoPath = new URL('appinfo.json', distDir);
   const appInfo = JSON.parse(await readFile(appInfoPath, 'utf8'));
   if (
@@ -91,7 +141,7 @@ async function createPackage() {
       )}\n`
     );
 
-    const installedSize = await directorySize(dataDir);
+    const installedSize = Math.ceil((await directorySize(dataDir)) / 1024);
     const control = [
       `Package: ${appInfo.id}`,
       `Version: ${appInfo.version}`,
@@ -110,11 +160,23 @@ async function createPackage() {
     const controlTar = join(workDir, 'control.tar.gz');
     const dataTar = join(workDir, 'data.tar.gz');
     await createTar(
-      { cwd: controlDir, file: controlTar, gzip: true, portable: true },
+      {
+        cwd: controlDir,
+        file: controlTar,
+        gzip: true,
+        portable: true,
+        mtime: SOURCE_DATE
+      },
       ['control']
     );
     await createTar(
-      { cwd: dataDir, file: dataTar, gzip: true, portable: true },
+      {
+        cwd: dataDir,
+        file: dataTar,
+        gzip: true,
+        portable: true,
+        mtime: SOURCE_DATE
+      },
       ['usr']
     );
 
@@ -127,7 +189,29 @@ async function createPackage() {
       createArMember('data.tar.gz', await readFile(dataTar))
     ]);
     await writeFile(outputPath, archive);
+    const sha256 = createHash('sha256').update(archive).digest('hex');
+    const manifestPath = new URL(`${appInfo.id}.manifest.json`, projectRoot);
+    await writeFile(
+      manifestPath,
+      `${JSON.stringify(
+        {
+          id: appInfo.id,
+          version: appInfo.version,
+          type: appInfo.type,
+          title: appInfo.title,
+          iconUri:
+            'https://raw.githubusercontent.com/zydon69/Youtube-for-LGWEBOS-AdsFree/main/assets/largeIcon.png',
+          sourceUrl: 'https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree',
+          rootRequired: false,
+          ipkUrl: outputName,
+          ipkHash: { sha256 }
+        },
+        null,
+        2
+      )}\n`
+    );
     console.info(`Created ${basename(outputPath.pathname)}`);
+    console.info(`SHA-256 ${sha256}`);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

@@ -15,8 +15,8 @@ export interface RequestInfo {
 }
 
 interface EventMap {
-  request: CustomEvent<RequestInfo>;
-  response: CustomEvent<Response>;
+  request: TypedCustomEvent<RequestInfo, unknown, 'request'>;
+  response: TypedCustomEvent<Response, unknown, 'response'>;
 }
 
 export class FetchRegistry extends CustomEventTarget<EventMap> {
@@ -31,6 +31,7 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
   }
 
   static async #dumpBody(resource: Request | Response) {
+    const MAX_DEBUG_BODY_BYTES = 64 * 1024;
     if (
       !resource?.constructor?.name ||
       !['Request', 'Response'].includes(resource.constructor.name)
@@ -39,13 +40,20 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
 
     const blob = await resource.clone().blob();
     if (!blob.size) return null;
+    if (blob.size > MAX_DEBUG_BODY_BYTES) {
+      return `[body omitted: ${blob.size} bytes]`;
+    }
 
     const fr = new FileReader();
 
-    const res = new Promise((resolve) => {
+    const res = new Promise((resolve, reject) => {
       fr.addEventListener('load', () => {
         resolve(fr.result);
       });
+      fr.addEventListener('error', () => reject(fr.error));
+      fr.addEventListener('abort', () =>
+        reject(new Error('Body read aborted'))
+      );
     });
 
     fr.readAsDataURL(blob);
@@ -54,13 +62,14 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
   }
 
   #customFetch = async (resource: FetchTarget, init?: RequestInit) => {
+    const requestID = this.#fetchCount++;
     if (window.__ytaf_debug__) {
-      console.debug(`Request ${this.#fetchCount}:`, resource);
-      init && console.debug(`Options  ${this.#fetchCount}:`, init);
+      console.debug(`Request ${requestID}:`, resource);
+      init && console.debug(`Options  ${requestID}:`, init);
 
       if (resource instanceof Request) {
         const reqBody = await FetchRegistry.#dumpBody(resource);
-        reqBody && console.debug(`Request Body ${this.#fetchCount}:`, reqBody);
+        reqBody && console.debug(`Request Body ${requestID}:`, reqBody);
       }
     }
 
@@ -76,7 +85,7 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
     );
     if (!reqAllowed) {
       console.info(
-        `Fetch request ${this.#fetchCount} was cancelled by listener.`,
+        `Fetch request ${requestID} was cancelled by listener.`,
         resource,
         init
       );
@@ -87,25 +96,13 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
     const res = await this.#originalFetch(resource, init);
 
     if (window.__ytaf_debug__) {
-      console.debug(`Response ${this.#fetchCount}:`, res);
+      console.debug(`Response ${requestID}:`, res);
 
       const resBody = await FetchRegistry.#dumpBody(res);
-      resBody && console.debug(`Response Body ${this.#fetchCount}:`, resBody);
+      resBody && console.debug(`Response Body ${requestID}:`, resBody);
     }
 
-    const resAllowed = this.dispatchEvent(
-      new TypedCustomEvent('response', { detail: res, cancelable: true })
-    );
-
-    if (!resAllowed) {
-      console.info(
-        `Fetch response ${this.#fetchCount} was cancelled by listener.`,
-        res
-      );
-      throw new TypeError('Failed to fetch');
-    }
-
-    this.#fetchCount++;
+    this.dispatchEvent(new TypedCustomEvent('response', { detail: res }));
 
     return res;
   };
@@ -117,8 +114,8 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
     return registry;
   }
 
-  [Symbol.dispose]() {
-    window.fetch = this.#originalFetch;
+  dispose() {
+    if (window.fetch === this.#customFetch) window.fetch = this.#originalFetch;
     registry = null;
   }
 }

@@ -25,8 +25,8 @@ function diffPlayerState(
 }
 
 interface EventMap {
-  newVideo: CustomEvent<VideoID>;
-  playbackStart: CustomEvent<undefined>;
+  newVideo: TypedCustomEvent<VideoID, unknown, 'newVideo'>;
+  playbackStart: TypedCustomEvent<undefined, unknown, 'playbackStart'>;
 }
 
 export enum PlayerMode {
@@ -42,6 +42,7 @@ class PlayerManager
   #player;
   #lastVideoID: VideoID | null = null;
   #lastPlayerState: PlayerStateObject | null = null;
+  #synchronizationToken: number;
 
   #handleNewVideo(videoID: VideoID) {
     console.debug('[PlayerManager] new video', videoID);
@@ -66,7 +67,9 @@ class PlayerManager
     }
 
     if (diff.isPlaying === true) {
-      this.dispatchEvent(new TypedCustomEvent('playbackStart'));
+      this.dispatchEvent(
+        new TypedCustomEvent<undefined, 'playbackStart'>('playbackStart')
+      );
     }
   };
 
@@ -75,6 +78,29 @@ class PlayerManager
     this.#player = player;
 
     player.addEventListener('onStateChange', this.#handlePlayerStateChange);
+    this.#synchronizationToken = window.setInterval(
+      () => this.#synchronizePlayer(),
+      2_000
+    );
+  }
+
+  #synchronizePlayer() {
+    const candidate = document.querySelector('.html5-video-player');
+    if (!candidate || candidate === this.#player) return;
+    if (!(candidate instanceof HTMLElement)) return;
+
+    this.#player.removeEventListener(
+      'onStateChange',
+      this.#handlePlayerStateChange
+    );
+    this.#player = candidate as YTPlayer;
+    this.#lastPlayerState = null;
+    this.#lastVideoID = null;
+    this.#player.addEventListener(
+      'onStateChange',
+      this.#handlePlayerStateChange
+    );
+    this.#handlePlayerStateChange();
   }
 
   get currentVideoID(): VideoID | null {
@@ -92,7 +118,16 @@ class PlayerManager
   }
 
   get player(): YTPlayer {
+    this.#synchronizePlayer();
     return this.#player;
+  }
+
+  destroy() {
+    window.clearInterval(this.#synchronizationToken);
+    this.#player.removeEventListener(
+      'onStateChange',
+      this.#handlePlayerStateChange
+    );
   }
 }
 

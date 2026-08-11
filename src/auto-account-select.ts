@@ -8,28 +8,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function installAutoAccountSelect() {
   const registry = await ResolveCommandRegistry.getInstance();
 
-  const hook: ResolveCommandHook = (resolveCommand, payload, extra) => {
+  const hook: ResolveCommandHook = (payload) => {
     if (!configRead('autoAccountSelect')) {
-      return resolveCommand(payload, extra);
+      return payload;
     }
 
     const selector = payload.startAccountSelectorCommand;
     const finalEndpoint = isRecord(selector) ? selector.nextEndpoint : null;
-    if (!isRecord(finalEndpoint)) return resolveCommand(payload, extra);
+    if (!isRecord(finalEndpoint)) return payload;
 
-    return registry.dispatchCommand(
-      {
-        onIdentityChanged: {
-          identityActionContext: {
-            nextEndpoint: finalEndpoint,
-            eventTrigger: 'ACCOUNT_EVENT_TRIGGER_WHOS_WATCHING'
-          },
-          isSameIdentity: true
+    const remainingPayload = { ...payload };
+    delete remainingPayload.startAccountSelectorCommand;
+    const commandMetadata = isRecord(payload.commandMetadata)
+      ? payload.commandMetadata
+      : {};
+    const webCommandMetadata = isRecord(commandMetadata.webCommandMetadata)
+      ? commandMetadata.webCommandMetadata
+      : {};
+    return {
+      ...remainingPayload,
+      onIdentityChanged: {
+        identityActionContext: {
+          nextEndpoint: finalEndpoint,
+          eventTrigger: 'ACCOUNT_EVENT_TRIGGER_WHOS_WATCHING'
         },
-        commandMetadata: { webCommandMetadata: { clientAction: true } }
+        isSameIdentity: true
       },
-      extra
-    );
+      commandMetadata: {
+        ...commandMetadata,
+        webCommandMetadata: { ...webCommandMetadata, clientAction: true }
+      }
+    };
   };
 
   registry.setHook('startAccountSelectorCommand', hook);

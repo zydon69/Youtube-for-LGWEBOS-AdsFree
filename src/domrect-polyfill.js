@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored legacy polyfill; see docs/vendor-patches.md
 //
 // https://raw.githubusercontent.com/Financial-Times/polyfill-library/c25c30e4463bef60fba1213ecb697f3e3f253d7b/polyfills/DOMRect/polyfill.js
 // License: MIT

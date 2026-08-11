@@ -1,11 +1,14 @@
+/** @param {unknown} value @returns {value is Record<string, any>} */
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @param {unknown} value @param {string} key */
 function getRecord(value, key) {
   return isRecord(value) && isRecord(value[key]) ? value[key] : null;
 }
 
+/** @param {Record<string, any> | null} sectionListRenderer */
 function removeAdSlots(sectionListRenderer) {
   if (
     !isRecord(sectionListRenderer) ||
@@ -30,12 +33,13 @@ function removeAdSlots(sectionListRenderer) {
   }
 }
 
+/** @param {any} value */
 export function removeAdsFromResponse(value) {
   if (!isRecord(value)) return value;
 
-  if (value.adPlacements) delete value.adPlacements;
-  if (Array.isArray(value.adSlots)) delete value.adSlots;
-  if (value.playerAds) delete value.playerAds;
+  if (Object.hasOwn(value, 'adPlacements')) delete value.adPlacements;
+  if (Object.hasOwn(value, 'adSlots')) delete value.adSlots;
+  if (Object.hasOwn(value, 'playerAds')) delete value.playerAds;
 
   const contents = getRecord(value, 'contents');
   const tvBrowse = getRecord(contents, 'tvBrowseRenderer');
@@ -65,14 +69,22 @@ export function removeAdsFromResponse(value) {
   return value;
 }
 
+/**
+ * @param {any} root
+ * @param {(record: Record<string, any>) => void} visitor
+ */
 function walkRecords(root, visitor) {
   if (!isRecord(root) && !Array.isArray(root)) return;
 
-  const stack = [root];
+  const stack = [{ value: root, depth: 0 }];
   const visited = new Set();
+  const MAX_VISITED_NODES = 50_000;
+  const MAX_DEPTH = 100;
 
-  while (stack.length > 0) {
-    const current = stack.pop();
+  while (stack.length > 0 && visited.size < MAX_VISITED_NODES) {
+    const next = stack.pop();
+    if (!next) break;
+    const { value: current, depth } = next;
     if (
       (!isRecord(current) && !Array.isArray(current)) ||
       visited.has(current)
@@ -83,12 +95,16 @@ function walkRecords(root, visitor) {
     visited.add(current);
     if (isRecord(current)) visitor(current);
 
+    if (depth >= MAX_DEPTH) continue;
     for (const child of Object.values(current)) {
-      if (isRecord(child) || Array.isArray(child)) stack.push(child);
+      if (isRecord(child) || Array.isArray(child)) {
+        stack.push({ value: child, depth: depth + 1 });
+      }
     }
   }
 }
 
+/** @param {any} value */
 export function removeShortsFromResponse(value) {
   walkRecords(value, (record) => {
     for (const key of ['gridRenderer', 'gridContinuation']) {
@@ -116,6 +132,7 @@ export function removeShortsFromResponse(value) {
   return value;
 }
 
+/** @param {any} value */
 export function removeEndscreenFromResponse(value) {
   walkRecords(value, (record) => {
     const endscreen = getRecord(record, 'endscreen');
@@ -127,6 +144,7 @@ export function removeEndscreenFromResponse(value) {
   return value;
 }
 
+/** @param {any} value */
 export function withInlinePlaybackNoAd(value) {
   if (!isRecord(value)) return value;
 

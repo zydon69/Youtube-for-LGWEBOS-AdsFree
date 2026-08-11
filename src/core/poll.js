@@ -14,9 +14,23 @@ export function pollUntil(
     scheduler = globalThis
   } = {}
 ) {
+  /** @param {string} name @param {number} value */
+  const validateDelay = (name, value) => {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError(`${name} must be a finite non-negative number`);
+    }
+  };
+  validateDelay('timeoutMs', timeoutMs);
+  validateDelay('initialDelayMs', initialDelayMs);
+  validateDelay('maxDelayMs', maxDelayMs);
+  if (maxDelayMs < initialDelayMs) {
+    throw new RangeError('maxDelayMs must be greater than initialDelayMs');
+  }
+
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     let delayMs = initialDelayMs;
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
     let settled = false;
 
@@ -25,6 +39,7 @@ export function pollUntil(
       signal?.removeEventListener('abort', abort);
     };
 
+    /** @param {T} value */
     const succeed = (value) => {
       if (settled) return;
       settled = true;
@@ -32,6 +47,7 @@ export function pollUntil(
       resolve(value);
     };
 
+    /** @param {unknown} error */
     const fail = (error) => {
       if (settled) return;
       settled = true;

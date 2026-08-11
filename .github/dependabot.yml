@@ -5,6 +5,12 @@ updates:
     versioning-strategy: 'increase'
     schedule:
       interval: 'weekly'
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    open-pull-requests-limit: 10
     groups:
       minor-and-patch:
         applies-to: version-updates
@@ -15,11 +21,3 @@ updates:
         applies-to: security-updates
         patterns:
           - '*'
-    ignore:
-      - dependency-name: '*'
-        versions: ['0.x']
-        update-types:
-          - 'version-update:semver-minor'
-      - dependency-name: '*'
-        update-types:
-          - 'version-update:semver-major'

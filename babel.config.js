@@ -60,7 +60,7 @@ function makeConfig(api) {
         {
           allExtensions: true, // TODO: remove for Babel 8
           disallowAmbiguousJSXLike: true,
-          rewriteImportExtensions: true
+          rewriteImportExtensions: false
         }
       ]
     ]

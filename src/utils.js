@@ -4,22 +4,26 @@ export function extractLaunchParams() {
   return parseLaunchParams(window.launchParams);
 }
 
+/** @param {unknown} params */
 export function handleLaunch(params) {
   const target = buildLaunchURL(params);
   console.info('[launch] Navigating to', target.href);
   window.location.assign(target.href);
 }
 
+/** @param {Node} root @param {(node: Node) => boolean} predicate */
 function findMatch(root, predicate) {
   const stack = [root];
 
   while (stack.length > 0) {
     const node = stack.pop();
+    if (!node) break;
     if (predicate(node)) return node;
 
     if (!node?.childNodes) continue;
     for (let index = node.childNodes.length - 1; index >= 0; index--) {
-      stack.push(node.childNodes[index]);
+      const child = node.childNodes[index];
+      if (child) stack.push(child);
     }
   }
 
@@ -38,7 +42,12 @@ function findMatch(root, predicate) {
 export function waitForChildAdd(parent, predicate, options = {}) {
   const { observeAttributes = false, signal, timeoutMs = 15_000 } = options;
 
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new RangeError('timeoutMs must be a finite non-negative number');
+  }
+
   return new Promise((resolve, reject) => {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timeoutToken;
     let settled = false;
 
@@ -48,6 +57,7 @@ export function waitForChildAdd(parent, predicate, options = {}) {
       signal?.removeEventListener('abort', handleAbort);
     };
 
+    /** @param {(value: any) => void} callback @param {any} value */
     const settle = (callback, value) => {
       if (settled) return;
       settled = true;
@@ -83,11 +93,16 @@ export function waitForChildAdd(parent, predicate, options = {}) {
     }
 
     signal?.addEventListener('abort', handleAbort, { once: true });
-    observer.observe(parent, {
-      subtree: true,
-      attributes: observeAttributes,
-      childList: true
-    });
+    try {
+      observer.observe(parent, {
+        subtree: true,
+        attributes: observeAttributes,
+        childList: true
+      });
+    } catch (error) {
+      settle(reject, error);
+      return;
+    }
 
     // Close the race between the caller's first lookup and observer installation.
     const existing = findMatch(parent, predicate);

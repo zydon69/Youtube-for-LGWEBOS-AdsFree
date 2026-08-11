@@ -34,3 +34,8 @@ test('stopping an aligned interval before alignment prevents interval creation',
   assert.equal(callbackCalls, 0);
   assert.equal(intervalCreated, false);
 });
+
+test('aligned interval rejects unsafe delays', () => {
+  assert.throws(() => scheduleAlignedInterval(() => {}, -1, 1000), RangeError);
+  assert.throws(() => scheduleAlignedInterval(() => {}, 0, 0), RangeError);
+});

@@ -1,3 +1,4 @@
+// @ts-nocheck -- vendored legacy polyfill; see docs/vendor-patches.md
 //
 // https://raw.githubusercontent.com/WICG/spatial-navigation/183f0146b6741007e46fa64ab0950447defdf8af/polyfill/spatial-navigation-polyfill.js
 // License: MIT
@@ -17,7 +18,7 @@
 (function () {
 
   // The polyfill must not be executed, if it's already enabled via browser engine or browser extensions.
-  if ('navigate' in window) {
+  if (typeof window.navigate === 'function') {
     return;
   }
 
@@ -86,6 +87,7 @@
      * If arrow key pressed, get the next focusing element and send it to focusing controller
      */
     window.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const currentKeyMode = (parent && parent.__spatialNavigation__.keyMode) || window.__spatialNavigation__.keyMode;
       const eventTarget = document.activeElement;
       const dir = ARROW_KEY_CODE[e.keyCode];
@@ -1750,9 +1752,11 @@
   initiateSpatialNavigation();
   enableExperimentalAPIs(false);
   
-  window.addEventListener('load', () => {
+  if (document.readyState === 'loading') {
+    window.addEventListener('load', spatialNavigationHandler, {once: true});
+  } else {
     spatialNavigationHandler();
-  });
+  }
 })();
 
 /**

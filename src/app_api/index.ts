@@ -1,6 +1,6 @@
-// Adapted from TizenTube's resolveCommand integration.
+// Typed compatibility boundary for YouTube TV's private resolveCommand API.
 
-import { pollUntil } from '../core/poll';
+import { pollUntil } from '../core/poll.js';
 
 declare global {
   interface Window {
@@ -16,10 +16,9 @@ interface ResolveCommand {
 
 export interface ResolveCommandHook {
   (
-    originalFn: ResolveCommand,
     payload: ResolveCommandPayload,
     extra: unknown
-  ): unknown;
+  ): ResolveCommandPayload | ResolveCommandPayload[];
 }
 
 interface RegistryOptions {
@@ -27,12 +26,49 @@ interface RegistryOptions {
   timeoutMs?: number;
 }
 
+interface HookTarget {
+  name: string;
+  instance: Record<string, unknown> & { resolveCommand: ResolveCommand };
+}
+
 let registry: ResolveCommandRegistry | null = null;
-let registryPromise: Promise<ResolveCommandRegistry> | null = null;
+
+function getHookTarget(name: string): HookTarget | null {
+  const target = window._yttv?.[name];
+  if (typeof target !== 'function' || !('instance' in target)) return null;
+  const instance = target.instance;
+  if (
+    instance === null ||
+    typeof instance !== 'object' ||
+    typeof (instance as Record<string, unknown>).resolveCommand !== 'function'
+  ) {
+    return null;
+  }
+  return {
+    name,
+    instance: instance as HookTarget['instance']
+  };
+}
+
+function findUnambiguousHookTarget(preferredName?: string) {
+  if (preferredName) {
+    const preferred = getHookTarget(preferredName);
+    if (preferred) return preferred;
+  }
+  if (!window._yttv || typeof window._yttv !== 'object') return null;
+
+  const candidates = Object.keys(window._yttv)
+    .map(getHookTarget)
+    .filter((target): target is HookTarget => target !== null);
+  return candidates.length === 1 ? candidates[0] : null;
+}
 
 export class ResolveCommandRegistry {
   #originalFn: ResolveCommand;
+  #targetName: string;
+  #targetInstance: HookTarget['instance'];
   #cmds = new Map<string, ResolveCommandHook>();
+  #synchronizationToken: number;
 
   private resolveCommand = (
     command: ResolveCommandPayload,
@@ -42,83 +78,78 @@ export class ResolveCommandRegistry {
       console.debug(`[${this.constructor.name}] Resolving`, { command, extra });
     }
 
+    let payloads = [command];
     for (const key of Object.keys(command)) {
       const hook = this.#cmds.get(key);
-      if (hook) return hook(this.#originalFn, command, extra);
+      if (!hook) continue;
+      const transformed: ResolveCommandPayload[] = [];
+      for (const payload of payloads) {
+        if (!Object.hasOwn(payload, key)) {
+          transformed.push(payload);
+          continue;
+        }
+        const result = hook(payload, extra);
+        transformed.push(...(Array.isArray(result) ? result : [result]));
+      }
+      payloads = transformed;
     }
 
-    return this.#originalFn(command, extra);
+    let result;
+    for (const payload of payloads) result = this.#originalFn(payload, extra);
+    return result;
   };
 
-  private constructor(hookTargetName: string) {
-    if (!ResolveCommandRegistry.checkHookTarget(hookTargetName)) {
-      throw new Error(
-        `Hook target "${hookTargetName}" not found in window._yttv`
-      );
-    }
-
-    const hookTarget = window._yttv![hookTargetName] as {
-      instance: { resolveCommand: ResolveCommand };
-    };
-
-    this.#originalFn = hookTarget.instance.resolveCommand.bind(
-      hookTarget.instance
-    );
-    hookTarget.instance.resolveCommand = this.resolveCommand;
-  }
-
-  private static checkHookTarget(targetName: string) {
-    const target = window._yttv?.[targetName];
-    if (typeof target !== 'function' || !('instance' in target)) return false;
-
-    const instance = target.instance;
-    return (
-      instance !== null &&
-      typeof instance === 'object' &&
-      typeof (instance as Record<string, unknown>).resolveCommand === 'function'
+  private constructor(target: HookTarget) {
+    this.#targetName = target.name;
+    this.#targetInstance = target.instance;
+    this.#originalFn = target.instance.resolveCommand.bind(target.instance);
+    target.instance.resolveCommand = this.resolveCommand;
+    this.#synchronizationToken = window.setInterval(
+      () => this.synchronizeTarget(),
+      2_000
     );
   }
 
-  private static findHookTarget() {
-    if (!window._yttv || typeof window._yttv !== 'object') return null;
+  private synchronizeTarget() {
+    const target = findUnambiguousHookTarget(this.#targetName);
+    if (!target || target.instance === this.#targetInstance) return;
 
-    for (const key of Object.keys(window._yttv)) {
-      if (this.checkHookTarget(key)) return key;
+    if (this.#targetInstance.resolveCommand === this.resolveCommand) {
+      this.#targetInstance.resolveCommand = this.#originalFn;
     }
-
-    return null;
+    this.#targetName = target.name;
+    this.#targetInstance = target.instance;
+    this.#originalFn = target.instance.resolveCommand.bind(target.instance);
+    target.instance.resolveCommand = this.resolveCommand;
   }
 
   private static waitForHookTarget({
     signal,
-    timeoutMs = 15_000
-  }: RegistryOptions = {}): Promise<string> {
-    return pollUntil(() => this.findHookTarget(), {
+    timeoutMs = 24 * 60 * 60 * 1000
+  }: RegistryOptions = {}) {
+    return pollUntil(() => findUnambiguousHookTarget(), {
       ...(signal ? { signal } : {}),
       timeoutMs,
       initialDelayMs: 50,
-      maxDelayMs: 500,
+      maxDelayMs: 1_000,
       scheduler: window
-    }) as Promise<string>;
+    }) as Promise<HookTarget>;
   }
 
-  static getInstance(options?: RegistryOptions) {
-    if (registry) return Promise.resolve(registry);
-    if (registryPromise) return registryPromise;
-
-    registryPromise = this.waitForHookTarget(options)
-      .then((key) => {
-        registry ??= new ResolveCommandRegistry(key);
-        return registry;
-      })
-      .finally(() => {
-        registryPromise = null;
-      });
-
-    return registryPromise;
+  static async getInstance(options?: RegistryOptions) {
+    if (registry) {
+      registry.synchronizeTarget();
+      return registry;
+    }
+    const target = await this.waitForHookTarget(options);
+    registry ??= new ResolveCommandRegistry(target);
+    return registry;
   }
 
   setHook(command: string, fn: ResolveCommandHook) {
+    if (this.#cmds.has(command)) {
+      throw new Error(`resolveCommand hook "${command}" already registered`);
+    }
     this.#cmds.set(command, fn);
   }
 
@@ -128,5 +159,14 @@ export class ResolveCommandRegistry {
 
   dispatchCommand(payload: ResolveCommandPayload, extra?: unknown) {
     return this.#originalFn(payload, extra);
+  }
+
+  destroy() {
+    window.clearInterval(this.#synchronizationToken);
+    if (this.#targetInstance.resolveCommand === this.resolveCommand) {
+      this.#targetInstance.resolveCommand = this.#originalFn;
+    }
+    this.#cmds.clear();
+    registry = null;
   }
 }

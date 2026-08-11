@@ -1,5 +1,6 @@
 *.ipk
 *.manifest.json
+/sbom.cdx.json
 /node_modules/
 /dist/
 .DS_Store

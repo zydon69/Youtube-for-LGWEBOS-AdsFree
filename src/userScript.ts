@@ -18,7 +18,6 @@ import './adblock.js';
 import './shorts.js';
 import './sponsorblock.js';
 import './ui.js';
-import './font-fix.css';
 import './thumbnail-quality';
 import './screensaver-fix';
 import './yt-fixes.css';
@@ -29,3 +28,14 @@ import './remove-endscreen';
 import './hooks';
 import './block-webos-cast';
 import './auto-account-select';
+import { restoreJSONHooks } from './hooks/json';
+import { FetchRegistry } from './hooks';
+
+window.addEventListener(
+  'pagehide',
+  () => {
+    restoreJSONHooks();
+    FetchRegistry.getInstance().dispose();
+  },
+  { once: true }
+);

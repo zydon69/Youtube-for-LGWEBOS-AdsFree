@@ -3,7 +3,6 @@
 </h1>
 <p align="center">
   <img src="https://img.shields.io/github/stars/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square&logo=github" alt="GitHub Stars">
-  <img src="https://img.shields.io/github/v/release/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square" alt="Latest Release">
   <img src="https://img.shields.io/github/contributors/zydon69/Youtube-for-LGWEBOS-AdsFree?style=flat-square" alt="Contributors">
   <img src="https://img.shields.io/github/downloads/zydon69/Youtube-for-LGWEBOS-AdsFree/total?style=flat-square" alt="Total Downloads">
   <img src="https://img.shields.io/badge/LG-webOS-000000?logo=webos&logoColor=white&style=flat-square" alt="webOS">
@@ -14,7 +13,7 @@
 </p>
 
 > [!NOTE]
-> This repository is a security- and reliability-hardened fork of
+> This repository is an independently maintained fork of
 > [webosbrew/youtube-webos](https://github.com/webosbrew/youtube-webos).
 > GitHub Actions are intentionally disabled; releases must be built and
 > published manually after running the local QA command.
@@ -27,10 +26,10 @@
 ## Features
 
 - Ad Blocking
-- [SponsorBlock](https://sponsor.ajay.app/) Integration
+- Optional [SponsorBlock](https://sponsor.ajay.app/) integration (disabled by default)
 - [Autostart Support](#autostart)
 - Force Highest Video Quality
-- Audio-Only Mode (🟦 Blue button on remote)
+- Screen-hidden mode (🟦 Blue button on remote; playback continues normally)
 - Full Animation Support
 - Shorts Removal
 - Higher-Quality Thumbnails
@@ -52,13 +51,13 @@
 
 ## Installation
 
-You can install the app using one of the following methods:
+Until this fork publishes a signed GitHub release, build the IPK locally from a
+reviewed commit using the instructions below. The official webOS Brew package
+currently points to the upstream project and does not install this fork.
 
-- **[webOS Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel):**
-  App is available in the official webOS Brew repository.
-- **[Device Manager](https://github.com/webosbrew/dev-manager-desktop):**
-  Use a pre-built `.ipk` file from this fork's [Releases](https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree/releases) page.
-- **Command Line (webOS CLI):** Configure the tools [below](#development-setup)
+The generated IPK can be installed with
+[Device Manager](https://github.com/webosbrew/dev-manager-desktop) or the webOS
+CLI.
 
 ---
 
@@ -108,12 +107,16 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
 ### Building an IPK
 
 ```sh
-pnpm run qa
 pnpm run package
 ```
 
-The production QA command runs linting, type checking, automated tests, the
-production build, ES5 compatibility validation, and the dependency audit.
+The packaging command first runs linting, strict type checking, automated
+tests, the production build, bundle smoke testing, ES5 compatibility validation
+and the dependency audit. Packaging stops on any failure.
+
+SponsorBlock sends a short hashed video-ID prefix to its external API only when
+the user enables it. See [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md)
+and [THREAT_MODEL.md](THREAT_MODEL.md) before distributing the application.
 
 The `.ipk` file will be generated in the project root directory. You can stop here if you're fine with installing the IPK via [the webOS Dev Manager app](https://github.com/webosbrew/dev-manager-desktop). Alternatively, continue below if you want to make it so you can install the IPK on your TV with one command.
 
@@ -208,7 +211,7 @@ pnpm run inspect
 ### Build, Install, and Launch
 
 ```sh
-pnpm run build:dev && pnpm run package && pnpm run deploy && pnpm run launch
+pnpm run qa && pnpm run package && pnpm run deploy && pnpm run launch
 ```
 
 To launch a specific video directly:

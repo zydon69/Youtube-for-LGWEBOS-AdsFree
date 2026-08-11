@@ -26,7 +26,7 @@ test('launch URLs never leave the exact YouTube origin', () => {
   assert.equal(
     buildLaunchURL({ contentTarget: 'https://www.youtube.com/tv#/watch?v=abc' })
       .href,
-    'https://www.youtube.com/tv#/watch?v=abc'
+    'https://www.youtube.com/tv?env_forceFullAnimation=1&env_enableWebSpeech=1&env_enableVoice=1#/watch?v=abc'
   );
 });
 
@@ -34,6 +34,12 @@ test('invalid launch parameters degrade to an empty object', () => {
   assert.deepEqual(parseLaunchParams('{broken'), {});
   assert.deepEqual(parseLaunchParams(null), {});
   assert.deepEqual(parseLaunchParams([]), {});
+  assert.deepEqual(parseLaunchParams('x'.repeat(20_000)), {});
+  assert.equal(
+    buildLaunchURL({ contentTarget: 'https://www.youtube.com/account' })
+      .pathname,
+    '/tv'
+  );
 });
 
 test('playback payload enrichment preserves native JSON semantics', () => {

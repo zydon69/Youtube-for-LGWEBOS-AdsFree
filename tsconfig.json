@@ -2,8 +2,10 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "allowJs": true,
+    "checkJs": true,
 
-    "lib": ["ESNext", "DOM"]
+    "lib": ["ESNext", "DOM"],
+    "noUncheckedSideEffectImports": true
   },
   "include": ["./src"],
   "references": [{ "path": "./tsconfig.tooling.json" }]

@@ -43,6 +43,8 @@ function rewriteURL(url: URL) {
     'default'
   ] as const;
 
+  if (url.protocol !== 'https:' || url.hostname !== 'i.ytimg.com') return null;
+
   const isABTest = url.hostname.match(/^i\d/) !== null;
   // Don't know how to handle A/B test thumbnails so we don't upgrade them.
   if (isABTest) return null;
@@ -61,8 +63,6 @@ function rewriteURL(url: URL) {
   url = new URL(url);
 
   url.pathname = replacementPathname;
-  url.search = '';
-
   return url;
 }
 
@@ -74,7 +74,7 @@ function parseCSSUrl(value: string): URL | undefined {
   }
 }
 
-async function upgradeBgImg(element: HTMLElement) {
+function upgradeBgImg(element: HTMLElement) {
   const style = element.style;
   const old = parseCSSUrl(style.backgroundImage);
   if (!old) return;
@@ -101,56 +101,73 @@ async function upgradeBgImg(element: HTMLElement) {
   lazyLoader.src = target.href;
 }
 
-const obs = new MutationObserver((mutations) => {
-  const YT_THUMBNAIL_ELEMENT_TAG = 'ytlr-thumbnail-details';
-
+const YT_THUMBNAIL_ELEMENT_TAG = 'ytlr-thumbnail-details';
+let observedThumbnails = new WeakSet<HTMLElement>();
+const styleObserver = new MutationObserver((mutations) => {
   const dummy = document.createElement('div');
-
-  // handle backgroundImage change
-  // YT re-uses thumbnail elements in its virtual list implementation.
-  mutations
-    .filter((mut) => mut.type === 'attributes')
-    .map((mut) => [mut.target, mut] as const)
-    .filter((value): value is [HTMLElement, MutationRecord] => {
-      const [node, { oldValue }] = value;
-      dummy.style.cssText = oldValue ?? '';
-
-      return (
-        node instanceof HTMLElement &&
-        node.matches(YT_THUMBNAIL_ELEMENT_TAG) &&
-        node.style.backgroundImage !== '' &&
-        node.style.backgroundImage !== dummy.style.backgroundImage
-      );
-    })
-    .map(([elem]) => elem)
-    .forEach(upgradeBgImg);
-
-  // handle element add
-  mutations
-    .filter((mut) => mut.type === 'childList')
-    .flatMap((mut) => Array.from(mut.addedNodes))
-    .filter((node) => node instanceof HTMLElement)
-    .flatMap((elem) =>
-      Array.from(elem.querySelectorAll<HTMLElement>(YT_THUMBNAIL_ELEMENT_TAG))
-    )
-    .filter((elem) => elem.style.backgroundImage !== '')
-    .forEach(upgradeBgImg);
+  for (const mutation of mutations) {
+    if (!(mutation.target instanceof HTMLElement)) continue;
+    dummy.style.cssText = mutation.oldValue ?? '';
+    if (
+      mutation.target.style.backgroundImage &&
+      mutation.target.style.backgroundImage !== dummy.style.backgroundImage
+    ) {
+      upgradeBgImg(mutation.target);
+    }
+  }
 });
 
-function enableObserver() {
-  obs.observe(document.body, {
-    subtree: true,
-    childList: true,
+function observeThumbnail(element: HTMLElement) {
+  if (observedThumbnails.has(element)) return;
+  observedThumbnails.add(element);
+  styleObserver.observe(element, {
     attributes: true,
     attributeFilter: ['style'],
     attributeOldValue: true
   });
+  if (element.style.backgroundImage) upgradeBgImg(element);
+}
+
+function observeThumbnailTree(root: HTMLElement) {
+  if (root.matches(YT_THUMBNAIL_ELEMENT_TAG)) observeThumbnail(root);
+  root
+    .querySelectorAll<HTMLElement>(YT_THUMBNAIL_ELEMENT_TAG)
+    .forEach(observeThumbnail);
+}
+
+const documentObserver = new MutationObserver((mutations) => {
+  for (const mutation of mutations) {
+    for (const node of mutation.addedNodes) {
+      if (node instanceof HTMLElement) observeThumbnailTree(node);
+    }
+  }
+});
+
+function enableObserver() {
+  if (!document.body) return;
+  observeThumbnailTree(document.body);
+  documentObserver.observe(document.body, { subtree: true, childList: true });
+}
+
+function disableObserver() {
+  documentObserver.disconnect();
+  styleObserver.disconnect();
+  observedThumbnails = new WeakSet();
 }
 
 import { configRead, configAddChangeListener } from './config';
 
-if (configRead('upgradeThumbnails')) enableObserver();
+function initializeThumbnailObserver() {
+  if (configRead('upgradeThumbnails')) enableObserver();
+}
+
+if (document.body) initializeThumbnailObserver();
+else {
+  document.addEventListener('DOMContentLoaded', initializeThumbnailObserver, {
+    once: true
+  });
+}
 
 configAddChangeListener('upgradeThumbnails', (event) =>
-  event.detail.newValue ? enableObserver() : obs.disconnect()
+  event.detail.newValue ? enableObserver() : disableObserver()
 );

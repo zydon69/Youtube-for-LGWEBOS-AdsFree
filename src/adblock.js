@@ -1,7 +1,17 @@
 import { configRead } from './config';
-import { removeAdsFromResponse } from './core/json-transforms';
-import { registerJSONParseTransformer } from './hooks/json';
+import {
+  removeAdsFromResponse,
+  withInlinePlaybackNoAd
+} from './core/json-transforms';
+import {
+  registerJSONParseTransformer,
+  registerJSONStringifyTransformer
+} from './hooks/json';
 
-registerJSONParseTransformer('adblock', (value) =>
-  configRead('enableAdBlock') ? removeAdsFromResponse(value) : value
+registerJSONParseTransformer('adblock', removeAdsFromResponse, () =>
+  configRead('enableAdBlock')
+);
+
+registerJSONStringifyTransformer('adblock', withInlinePlaybackNoAd, () =>
+  configRead('enableAdBlock')
 );

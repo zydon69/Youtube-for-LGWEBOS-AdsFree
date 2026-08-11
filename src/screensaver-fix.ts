@@ -1,78 +1,73 @@
-/**
- * On webOS, when a video element doesn't perfectly fill
- * the entire screen, the screensaver can be kick in.
- */
-
-import { requireElement } from './player_api/helpers';
+/** Keep the active watch-page video exactly aligned with the viewport. */
 
 function isPlayerHidden(video: HTMLVideoElement) {
-  // Youtube uses display none sometimes along with a negative top to hide the HTMLVideoElement.
-  return video.style.display == 'none' || video.style.top.startsWith('-');
+  return video.style.display === 'none' || video.style.top.startsWith('-');
 }
 
 function isWatchPage() {
   return document.body.classList.contains('WEB_PAGE_TYPE_WATCH');
 }
 
-const playerCtrlObs = new MutationObserver((mutations, obs) => {
-  // Only watch page has a full-screen player.
-  if (!isWatchPage()) {
-    obs.disconnect();
+function applyPlayerDimensions(video: HTMLVideoElement) {
+  if (!isWatchPage() || isPlayerHidden(video)) return;
+  const width = `${window.innerWidth}px`;
+  const height = `${window.innerHeight}px`;
+  if (video.style.width !== width) video.style.width = width;
+  if (video.style.height !== height) video.style.height = height;
+  if (video.style.left !== '0px') video.style.left = '0px';
+  if (video.style.top !== '0px') video.style.top = '0px';
+}
+
+let observedVideo: HTMLVideoElement | null = null;
+let synchronizationToken: number | null = null;
+
+const playerObserver = new MutationObserver(() => {
+  if (observedVideo) applyPlayerDimensions(observedVideo);
+});
+
+function synchronizePlayerObserver() {
+  synchronizationToken = null;
+  const candidate = isWatchPage() ? document.querySelector('video') : null;
+  const video = candidate instanceof HTMLVideoElement ? candidate : null;
+  if (video === observedVideo) {
+    if (video) applyPlayerDimensions(video);
     return;
   }
 
-  const video = mutations[0]?.target;
-  if (!(video instanceof HTMLVideoElement)) throw new Error();
-  const style = video.style;
-
-  // Not sure if there will be a race condition so just in case.
-  if (isPlayerHidden(video)) return;
-
-  const targetWidth = `${window.innerWidth}px`;
-  const targetHeight = `${window.innerHeight}px`;
-  const targetLeft = '0px';
-  const targetTop = '0px';
-
-  /**
-   * Check to see if identical before assignment as some webOS versions will trigger a mutation
-   * event even if the assignment effectively does nothing, leading to an infinite loop.
-   */
-  style.width !== targetWidth && (style.width = targetWidth);
-  style.height !== targetHeight && (style.height = targetHeight);
-  style.left !== targetLeft && (style.left = targetLeft);
-  style.top !== targetTop && (style.top = targetTop);
-});
-
-let syncGeneration = 0;
-
-async function synchronizePlayerObserver() {
-  const generation = ++syncGeneration;
-  playerCtrlObs.disconnect();
-  if (!isWatchPage()) return;
-
-  try {
-    // YouTube TV re-uses the same video element for everything.
-    const video = await requireElement('video', HTMLVideoElement);
-    if (generation !== syncGeneration || !isWatchPage()) return;
-
-    playerCtrlObs.observe(video, {
-      attributes: true,
-      attributeFilter: ['style']
-    });
-  } catch (error) {
-    if (generation === syncGeneration) {
-      console.warn('[screensaver-fix] Video did not become available', error);
-    }
-  }
+  playerObserver.disconnect();
+  observedVideo = video;
+  if (!video) return;
+  applyPlayerDimensions(video);
+  playerObserver.observe(video, {
+    attributes: true,
+    attributeFilter: ['style']
+  });
 }
 
-const bodyAttrObs = new MutationObserver(() => {
-  void synchronizePlayerObserver();
-});
+function queueSynchronization() {
+  if (synchronizationToken !== null) return;
+  synchronizationToken = window.setTimeout(synchronizePlayerObserver, 50);
+}
 
-bodyAttrObs.observe(document.body, {
-  attributes: true,
-  attributeFilter: ['class']
-});
+function initializeScreensaverFix() {
+  const bodyClassObserver = new MutationObserver(queueSynchronization);
+  bodyClassObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['class'],
+    subtree: false
+  });
+  const documentObserver = new MutationObserver(queueSynchronization);
+  documentObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+  window.addEventListener('resize', queueSynchronization);
+  synchronizePlayerObserver();
+}
 
-void synchronizePlayerObserver();
+if (document.body) initializeScreensaverFix();
+else {
+  document.addEventListener('DOMContentLoaded', initializeScreensaverFix, {
+    once: true
+  });
+}

@@ -11,7 +11,9 @@ import { basename } from 'node:path';
  */
 function transformAppInfo(input) {
   const appInfo = JSON.parse(input.toString());
-  appInfo.version = pkgJson.version;
+  if (appInfo.version !== pkgJson.version) {
+    throw new Error('assets/appinfo.json version must match package.json');
+  }
   return JSON.stringify(appInfo, null, 2);
 }
 
@@ -22,7 +24,11 @@ const makeConfig = (_env, argv) => [
      * NOTE: Builds with devtool = 'eval' contain very big eval chunks which seem
      * to cause segfaults (at least) on nodeJS v0.12.2 used on webOS 3.x.
      */
-    devtool: argv.mode === 'development' ? 'inline-source-map' : 'source-map',
+    devtool: argv.mode === 'development' ? 'inline-source-map' : false,
+
+    output: {
+      clean: true
+    },
 
     optimization: {
       /**
@@ -85,6 +91,7 @@ const makeConfig = (_env, argv) => [
           {
             context: 'assets',
             from: '**/*',
+            globOptions: { dot: false },
             transform: {
               transformer(input, absolutePath) {
                 if (basename(absolutePath) === 'appinfo.json') {
@@ -94,7 +101,8 @@ const makeConfig = (_env, argv) => [
               }
             }
           },
-          { context: 'src', from: 'index.html' }
+          { context: 'src', from: 'index.html' },
+          { from: 'THIRD_PARTY_NOTICES.md' }
         ]
       }),
       // babel doesn't transform top-level await.

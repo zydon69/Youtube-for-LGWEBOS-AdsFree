@@ -5,6 +5,11 @@
 import { FetchRegistry } from './hooks';
 
 FetchRegistry.getInstance().addEventListener('request', (evt) => {
-  const { url, resource, init } = evt.detail;
-  if (url.pathname === '/wake_cast_core') evt.preventDefault();
+  const { url } = evt.detail;
+  if (
+    url.origin === 'https://www.youtube.com' &&
+    url.pathname === '/wake_cast_core'
+  ) {
+    evt.preventDefault();
+  }
 });

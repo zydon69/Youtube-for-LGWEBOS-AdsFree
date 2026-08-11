@@ -15,9 +15,18 @@ class MemoryStorage {
 
 globalThis.window = { localStorage: new MemoryStorage() };
 globalThis.DocumentFragment = class extends EventTarget {};
+globalThis.window.localStorage.setItem(
+  'ytaf-configuration',
+  JSON.stringify({ enableSponsorBlock: true, upgradeThumbnails: true })
+);
 
 const { configAddChangeListener, configRead, configWrite } =
   await import('../src/config.js');
+
+test('third-party SponsorBlock requests require explicit opt-in', () => {
+  assert.equal(configRead('enableSponsorBlock'), false);
+  assert.equal(configRead('upgradeThumbnails'), true);
+});
 
 test('configuration changes expose the new boolean value', () => {
   let observedValue;
@@ -25,9 +34,9 @@ test('configuration changes expose the new boolean value', () => {
     observedValue = event.detail.newValue;
   });
 
-  configWrite('upgradeThumbnails', true);
-  assert.equal(observedValue, true);
-  assert.equal(configRead('upgradeThumbnails'), true);
+  configWrite('upgradeThumbnails', false);
+  assert.equal(observedValue, false);
+  assert.equal(configRead('upgradeThumbnails'), false);
 });
 
 test('configuration rejects unknown keys and non-boolean values', () => {

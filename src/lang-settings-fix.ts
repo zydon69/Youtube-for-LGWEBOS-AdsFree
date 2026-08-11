@@ -28,36 +28,43 @@ function isLanguageSetting(value: unknown) {
 export async function installLanguageSettingsFix() {
   const registry = await ResolveCommandRegistry.getInstance();
 
-  const hook: ResolveCommandHook = (resolveCommand, payload, extra) => {
+  const hook: ResolveCommandHook = (payload) => {
     const endpoint = payload.setClientSettingEndpoint;
     if (!isRecord(endpoint) || !Array.isArray(endpoint.settingDatas)) {
-      return resolveCommand(payload, extra);
+      return payload;
     }
 
-    const languageSetting = endpoint.settingDatas.find(isLanguageSetting);
-    if (!isRecord(languageSetting)) return resolveCommand(payload, extra);
+    const languageSettings = endpoint.settingDatas.filter(isLanguageSetting);
+    if (languageSettings.length === 0) return payload;
 
     const prefs = getPrefsCookie();
+    const languageSetting = languageSettings.at(-1)!;
     prefs.set('hl', languageSetting.stringValue as string);
     const expires = new Date();
     expires.setFullYear(expires.getFullYear() + 10);
-    document.cookie = `PREF=${prefs.toString()}; Domain=.youtube.com; Path=/; Secure; SameSite=Lax; expires=${expires.toUTCString()};`;
+    const encodedPrefs = prefs.toString();
+    document.cookie = `PREF=${encodedPrefs}; Domain=.youtube.com; Path=/; Secure; SameSite=Lax; expires=${expires.toUTCString()};`;
+    if (getPrefsCookie().get('hl') !== languageSetting.stringValue) {
+      console.warn('[lang-settings-fix] PREF cookie write was rejected');
+      return payload;
+    }
 
     const remainingSettings = endpoint.settingDatas.filter(
-      (setting) => setting !== languageSetting
+      (setting) => !isLanguageSetting(setting)
     );
+    const commands: ResolveCommandPayload[] = [];
     if (remainingSettings.length > 0) {
-      const forwardedPayload: ResolveCommandPayload = {
+      commands.push({
         ...payload,
         setClientSettingEndpoint: {
           ...endpoint,
           settingDatas: remainingSettings
         }
-      };
-      resolveCommand(forwardedPayload, extra);
+      });
     }
 
-    return resolveCommand({ signalAction: { signal: 'RELOAD_PAGE' } }, extra);
+    commands.push({ signalAction: { signal: 'RELOAD_PAGE' } });
+    return commands;
   };
 
   registry.setHook('setClientSettingEndpoint', hook);

@@ -30,18 +30,8 @@ export async function requireElement<E extends typeof Element>(
   return result as InstanceType<E>;
 }
 
-let playerPromise: Promise<YTPlayer> | null = null;
-
 export async function getPlayer(): Promise<YTPlayer> {
-  if (!playerPromise) {
-    playerPromise = requireElement(
-      '.html5-video-player',
-      HTMLElement
-    ) as Promise<YTPlayer>;
-    playerPromise.catch(() => {
-      playerPromise = null;
-    });
-  }
-
-  return playerPromise;
+  return requireElement('.html5-video-player', HTMLElement, {
+    timeoutMs: 24 * 60 * 60 * 1000
+  }) as Promise<YTPlayer>;
 }
