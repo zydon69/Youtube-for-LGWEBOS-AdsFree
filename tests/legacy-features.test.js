@@ -213,6 +213,7 @@ test('thumbnail queue times out stalled images and preserves URL data', async ()
 
   try {
     const module = await import('../src/thumbnail-quality.ts?test=stalled');
+    module.installThumbnailQuality();
     const webpTimeout = [...scheduled.entries()].find(
       ([, task]) => task.delay === 1_500
     );
@@ -239,6 +240,20 @@ test('thumbnail queue times out stalled images and preserves URL data', async ()
     assert.equal(
       module.rewriteThumbnailURL(
         new URL('https://i1.ytimg.com/vi/abc/hqdefault.jpg'),
+        true
+      ),
+      null
+    );
+    assert.equal(
+      module.rewriteThumbnailURL(
+        new URL('https://i.ytimg.com:444/vi/abc/hqdefault.jpg'),
+        true
+      ),
+      null
+    );
+    assert.equal(
+      module.rewriteThumbnailURL(
+        new URL('https://user:secret@i.ytimg.com/vi/abc/hqdefault.jpg'),
         true
       ),
       null
@@ -301,6 +316,7 @@ test('thumbnail startup cleans constructor/src failures and rolls back observer 
   try {
     const sourceFailureModule =
       await import('../src/thumbnail-quality.ts?test=source-failure');
+    sourceFailureModule.installThumbnailQuality();
     assert.equal(activeTimers.size, 0);
     sourceFailureModule.dispose();
 
@@ -319,8 +335,10 @@ test('thumbnail startup cleans constructor/src failures and rolls back observer 
     }
     globalThis.Image = ThrowingImage;
     globalThis.MutationObserver = FailingMutationObserver;
-    await assert.rejects(
-      import('../src/thumbnail-quality.ts?test=observer-failure'),
+    const observerFailureModule =
+      await import('../src/thumbnail-quality.ts?test=observer-failure');
+    assert.throws(
+      () => observerFailureModule.installThumbnailQuality(),
       /observer unavailable/
     );
     assert.equal(activeTimers.size, 0);

@@ -115,18 +115,37 @@ function findHookTargets(preferredNames: readonly string[] = []) {
   return targets;
 }
 
-function withCallerCancellation<T>(
+function withCallerControls<T>(
   promise: Promise<T>,
-  signal: AbortSignal | undefined
+  { signal, timeoutMs }: RegistryOptions
 ) {
-  if (!signal) return promise;
-  if (signal.aborted)
+  if (signal?.aborted)
     return Promise.reject(createAbortError('Operation aborted'));
+  if (
+    timeoutMs !== undefined &&
+    (!Number.isFinite(timeoutMs) || timeoutMs < 0)
+  ) {
+    return Promise.reject(
+      new RangeError('timeoutMs must be a finite non-negative number')
+    );
+  }
+  if (!signal && timeoutMs === undefined) return promise;
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(createAbortError('Operation aborted'));
-    signal.addEventListener('abort', abort, { once: true });
+    const timeoutToken =
+      timeoutMs === undefined
+        ? null
+        : window.setTimeout(
+            () =>
+              reject(
+                new Error(`ResolveCommand timed out after ${timeoutMs}ms`)
+              ),
+            timeoutMs
+          );
+    signal?.addEventListener('abort', abort, { once: true });
     promise.then(resolve, reject).finally(() => {
-      signal.removeEventListener('abort', abort);
+      signal?.removeEventListener('abort', abort);
+      if (timeoutToken !== null) window.clearTimeout(timeoutToken);
     });
   });
 }
@@ -138,10 +157,10 @@ export class ResolveCommandRegistry {
   #synchronizationToken: number | null = null;
   #destroyed = false;
 
-  private constructor(targets: HookTarget[]) {
+  private constructor(targets: HookTarget[], allowDeferred = false) {
     try {
       for (const target of targets) this.bindTarget(target);
-      if (this.#targets.size === 0) {
+      if (this.#targets.size === 0 && !allowDeferred) {
         throw new Error('No writable resolveCommand target was found');
       }
       this.#synchronizationToken = window.setInterval(
@@ -224,6 +243,12 @@ export class ResolveCommandRegistry {
     command: ResolveCommandPayload,
     extra: unknown
   ) {
+    if (this.#targets.get(target.instance) !== target) {
+      return Reflect.apply(target.originalFn, target.instance, [
+        command,
+        extra
+      ]);
+    }
     if (!isRecord(command)) {
       return Reflect.apply(target.originalFn, target.instance, [
         command,
@@ -240,6 +265,19 @@ export class ResolveCommandRegistry {
     return result;
   }
 
+  private createBinding(target: HookTarget, originalFn: ResolveCommand) {
+    const binding = {
+      ...target,
+      originalFn,
+      wrapper: undefined as unknown as ResolveCommand
+    } satisfies BoundTarget;
+    // The binding object is never mutated after publication. Host wrappers may
+    // retain this generation safely while a later generation is installed.
+    binding.wrapper = (command, extra) =>
+      this.invokeTarget(binding, command, extra);
+    return binding;
+  }
+
   private bindTarget(target: HookTarget) {
     const existing = this.#targets.get(target.instance);
     if (existing) {
@@ -252,13 +290,12 @@ export class ResolveCommandRegistry {
           this.#targets.delete(target.instance);
           return false;
         }
-        // YouTube replaced resolveCommand on the same singleton. Treat the new
-        // function as the host original and immediately re-wrap it.
-        target.instance.resolveCommand = existing.wrapper;
-        if (target.instance.resolveCommand !== existing.wrapper) {
+        const nextBinding = this.createBinding(target, current);
+        target.instance.resolveCommand = nextBinding.wrapper;
+        if (target.instance.resolveCommand !== nextBinding.wrapper) {
           throw new TypeError('Host altered the resolveCommand wrapper');
         }
-        existing.originalFn = current;
+        this.#targets.set(target.instance, nextBinding);
         return true;
       } catch (error) {
         try {
@@ -285,13 +322,7 @@ export class ResolveCommandRegistry {
       console.warn(`[app-api] Unable to inspect _yttv.${target.name}`, error);
       return false;
     }
-    const binding = {
-      ...target,
-      originalFn,
-      wrapper: undefined as unknown as ResolveCommand
-    };
-    binding.wrapper = (command, extra) =>
-      this.invokeTarget(binding, command, extra);
+    const binding = this.createBinding(target, originalFn);
     try {
       target.instance.resolveCommand = binding.wrapper;
       if (target.instance.resolveCommand !== binding.wrapper) {
@@ -378,10 +409,7 @@ export class ResolveCommandRegistry {
       const controller =
         typeof AbortController === 'function' ? new AbortController() : null;
       const pending = this.waitForHookTargets(generation, {
-        ...(controller ? { signal: controller.signal } : {}),
-        ...(options.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: options.timeoutMs })
+        ...(controller ? { signal: controller.signal } : {})
       })
         .then((targets) => {
           if (generation !== registryGeneration) {
@@ -396,7 +424,18 @@ export class ResolveCommandRegistry {
       pendingRegistry = { controller, promise: pending };
     }
 
-    return withCallerCancellation(pendingRegistry.promise, options.signal);
+    return withCallerControls(pendingRegistry.promise, options);
+  }
+
+  static getDeferredInstance() {
+    if (registry) {
+      registry.synchronizeTargets();
+      return registry;
+    }
+    pendingRegistry?.controller?.abort();
+    pendingRegistry = null;
+    registry = new ResolveCommandRegistry(findHookTargets(), true);
+    return registry;
   }
 
   static destroyInstance() {

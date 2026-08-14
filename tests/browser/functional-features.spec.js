@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 test('legacy TV APIs keep settings, clock and screen-hidden functional', async ({
   page
 }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   const bundle = await readFile('dist/webOSUserScripts/userScript.js', 'utf8');
   await page.route('https://www.youtube.com/**', (route) =>
     route.fulfill({
@@ -20,6 +22,14 @@ test('legacy TV APIs keep settings, clock and screen-hidden functional', async (
   );
   await page.goto('https://www.youtube.com/tv#/watch?v=legacy01');
   await page.evaluate(() => {
+    window.__ytafBootstrapResult = null;
+    document.addEventListener(
+      'ytafBootstrapComplete',
+      (event) => {
+        window.__ytafBootstrapResult = event.detail;
+      },
+      { once: true }
+    );
     localStorage.setItem(
       'ytaf-configuration-v2',
       JSON.stringify({ showWatch: true })
@@ -42,7 +52,43 @@ test('legacy TV APIs keep settings, clock and screen-hidden functional', async (
   }, bundle);
 
   await expect.poll(() => page.locator('.ytaf-ui-container').count()).toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => window.__ytafBootstrapResult))
+    .not.toBeNull();
+  expect(
+    await page.evaluate(() => window.__ytafBootstrapResult.failures)
+  ).toEqual([]);
+  expect(pageErrors).toEqual([]);
   await expect(page.locator('.webOs-watch')).toHaveText(/^\d{2}:\d{2}$/);
+
+  const versionContrast = await page
+    .locator('.ytaf-ui-version')
+    .evaluate((element) => {
+      const parse = (value) =>
+        value
+          .match(/[\d.]+/g)
+          .slice(0, 3)
+          .map(Number)
+          .map((channel) => {
+            const normalized = channel / 255;
+            return normalized <= 0.04045
+              ? normalized / 12.92
+              : ((normalized + 0.055) / 1.055) ** 2.4;
+          });
+      const luminance = ([red, green, blue]) =>
+        0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      const foreground = luminance(
+        parse(window.getComputedStyle(element).color)
+      );
+      const background = luminance(
+        [18, 18, 18].map((value) => {
+          const normalized = value / 255;
+          return ((normalized + 0.055) / 1.055) ** 2.4;
+        })
+      );
+      return (foreground + 0.05) / (background + 0.05);
+    });
+  expect(versionContrast).toBeGreaterThanOrEqual(4.5);
 
   const pressRemoteKey = (code, repeat = false) =>
     page.evaluate(

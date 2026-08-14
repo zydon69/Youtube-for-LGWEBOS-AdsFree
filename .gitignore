@@ -1,4 +1,10 @@
 *.ipk
+.env
+.env.*
+.netrc
+.npmrc
+*.key
+*.pem
 *.manifest.json
 *.provenance.json
 *.sha256
@@ -6,7 +12,11 @@
 /node_modules/
 /dist/
 /coverage/
+/coverage-tools/
+/coverage-package/
 /playwright-report/
 /test-results/
 .DS_Store
-/.vscode/
+/.vscode/*
+!/.vscode/extensions.json
+!/.vscode/settings.json

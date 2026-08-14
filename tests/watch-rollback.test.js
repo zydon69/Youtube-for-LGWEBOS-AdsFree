@@ -39,7 +39,8 @@ test('watch construction rolls back DOM and timers when observation fails', asyn
   };
 
   try {
-    await assert.rejects(import('../src/watch.js'), /observer unavailable/);
+    const watch = await import('../src/watch.js');
+    assert.throws(() => watch.installWatch(), /observer unavailable/);
     assert.equal(browser.document.querySelector('.webOs-watch'), null);
     assert.ok(createdTimers.size > 0);
     for (const token of createdTimers)

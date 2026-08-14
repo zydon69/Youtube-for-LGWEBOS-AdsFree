@@ -1,33 +1,42 @@
 /*global __YTAF_VERSION__*/
-import './spatial-navigation-polyfill.js';
 import {
-  configAddChangeListener,
-  configRead,
-  configWrite,
-  configGetDesc
-} from './config.js';
+  disposeSpatialNavigationPolyfill,
+  installSpatialNavigationPolyfill
+} from './spatial-navigation-polyfill.js';
+import { configAddChangeListener, configRead } from './config.js';
 import './ui.css';
-import { SPONSORBLOCK_CATEGORY_OPTIONS } from './core/sponsorblock-categories.js';
+import {
+  disposeNotifications,
+  showNotification
+} from './core/notifications.js';
+export { showNotification } from './core/notifications.js';
 import { resolveActiveVideo } from './core/active-media-resolver.ts';
 import {
   acquireTransactionalOwnership,
   InlineStyleOwner
 } from './core/inline-style-owner.js';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
+import { createSettingsPanel } from './core/settings-panel.js';
 
-const spatialNavigation = window.__spatialNavigation__;
-const previousSpatialKeyMode = spatialNavigation?.keyMode;
-const hadOwnSpatialKeyMode = spatialNavigation
-  ? Object.hasOwn(spatialNavigation, 'keyMode')
-  : false;
+/** @type {{ keyMode: string } | null} */
+let spatialNavigation = null;
+/** @type {string | undefined} */
+let previousSpatialKeyModeValue;
+/** @type {PropertyDescriptor | undefined} */
+let previousSpatialKeyModeDescriptor;
 let ownsSpatialKeyMode = false;
-try {
+
+function configureSpatialNavigation() {
+  spatialNavigation = window.__spatialNavigation__ ?? null;
   if (spatialNavigation) {
+    previousSpatialKeyModeValue = spatialNavigation.keyMode;
+    previousSpatialKeyModeDescriptor = Object.getOwnPropertyDescriptor(
+      spatialNavigation,
+      'keyMode'
+    );
     spatialNavigation.keyMode = 'NONE';
     ownsSpatialKeyMode = spatialNavigation.keyMode === 'NONE';
   }
-} catch (error) {
-  console.warn('[ui] Unable to configure spatial navigation', error);
 }
 
 function restoreSpatialNavigation() {
@@ -36,17 +45,23 @@ function restoreSpatialNavigation() {
     !spatialNavigation ||
     spatialNavigation.keyMode !== 'NONE'
   ) {
+    spatialNavigation = null;
     return;
   }
   try {
-    if (previousSpatialKeyMode !== undefined) {
-      spatialNavigation.keyMode = previousSpatialKeyMode;
-    } else if (!hadOwnSpatialKeyMode) {
-      Reflect.deleteProperty(spatialNavigation, 'keyMode');
-    }
+    if (previousSpatialKeyModeDescriptor) {
+      Reflect.set(spatialNavigation, 'keyMode', previousSpatialKeyModeValue);
+      Object.defineProperty(
+        spatialNavigation,
+        'keyMode',
+        previousSpatialKeyModeDescriptor
+      );
+    } else Reflect.deleteProperty(spatialNavigation, 'keyMode');
     ownsSpatialKeyMode = false;
   } catch (error) {
     console.warn('[ui] Unable to restore spatial navigation', error);
+  } finally {
+    spatialNavigation = null;
   }
 }
 
@@ -62,29 +77,16 @@ const colorCodeMap = new Map([
   [167, 'blue'],
   [191, 'blue']
 ]);
-/** @type {Record<string, string>} */
-const COLOR_MAP = {
-  red: 'rgba(255, 0, 0, 0.9)',
-  green: 'rgba(0, 162, 0, 0.9)',
-  yellow: 'rgba(255, 255, 0, 0.9)',
-  blue: 'rgba(0, 128, 255, 0.9)',
-  indigo: 'rgba(75, 0, 130, 0.9)',
-  grey: 'rgba(255, 255, 255, 0.5)',
-  none: 'rgba(0, 0, 0, 0)'
-};
 const AUDIO_OVERLAY_SELECTOR = '.ytLrAudioPlayerOverlayAudioMode';
 const YTAF_OVERLAY_CLASS = 'ytaf-ui-watchControl-overlayMessage';
-const PANEL_HEADING_ID = 'ytaf-settings-heading';
-const SPONSOR_DESCRIPTION_ID = 'ytaf-sponsor-description';
 
 /** @type {Array<() => void>} */
 const configDisposers = [];
-/** @type {Map<HTMLElement, number[]>} */
-const notificationTimers = new Map();
 /** @type {Map<Element, string | null>} */
 const backgroundAriaState = new Map();
 
-let disposed = false;
+let disposed = true;
+let installed = false;
 let initialized = false;
 let optionsPanelVisible = false;
 /** @type {Element | null} */
@@ -95,6 +97,8 @@ let modalBodyObserver = null;
 let bodyClassObserver = null;
 /** @type {HTMLElement | null} */
 let observedBody = null;
+/** @type {Set<HTMLElement>} */
+const qualityRootClassOwners = new Set();
 /** @type {(() => void) | null} */
 let unsubscribeUIBodyDOM = null;
 /** @type {HTMLStyleElement | null} */
@@ -126,7 +130,21 @@ function getEventCode(event) {
 
 /** @param {KeyboardEvent} event */
 function getKeyColor(event) {
-  return colorCodeMap.get(getEventCode(event)) ?? null;
+  const code = getEventCode(event);
+  if (code === 191) {
+    let target = event.target instanceof Element ? event.target : null;
+    while (target) {
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.getAttribute('contenteditable') === 'true'
+      ) {
+        return null;
+      }
+      target = target.parentElement;
+    }
+  }
+  return colorCodeMap.get(code) ?? null;
 }
 
 function getFocusablePanelElements() {
@@ -142,110 +160,10 @@ function getFocusablePanelElements() {
   );
 }
 
-/** @param {string} key @param {{ describedBy?: string }} [options] */
-function createConfigCheckbox(key, { describedBy } = {}) {
-  const elmInput = document.createElement('input');
-  elmInput.type = 'checkbox';
-  elmInput.checked = configRead(key);
-  if (describedBy) elmInput.setAttribute('aria-describedby', describedBy);
-
-  const changeHandler = () => {
-    try {
-      configWrite(key, elmInput.checked);
-    } catch (error) {
-      elmInput.checked = configRead(key);
-      console.warn(`[ui] Unable to save "${key}"`, error);
-      showNotification('Unable to save setting', 2500, 'red');
-    }
-  };
-  elmInput.addEventListener('change', changeHandler);
-  configDisposers.push(() =>
-    elmInput.removeEventListener('change', changeHandler)
-  );
-  configDisposers.push(
-    configAddChangeListener(key, (event) => {
-      elmInput.checked = event.detail.newValue;
-    })
-  );
-
-  const elmLabel = document.createElement('label');
-  elmLabel.appendChild(elmInput);
-  elmLabel.appendChild(document.createTextNode(`\u00a0${configGetDesc(key)}`));
-  return elmLabel;
-}
-
-function createOptionsPanel() {
-  const container = document.createElement('div');
-  container.className = 'ytaf-ui-container';
-  container.style.display = 'none';
-  container.style.overflowY = 'auto';
-  container.style.boxSizing = 'border-box';
-  container.setAttribute('tabindex', '-1');
-  container.setAttribute('role', 'dialog');
-  container.setAttribute('aria-modal', 'true');
-  container.setAttribute('aria-labelledby', PANEL_HEADING_ID);
-  container.setAttribute('aria-hidden', 'true');
-
-  const heading = document.createElement('h1');
-  heading.id = PANEL_HEADING_ID;
-  heading.textContent = 'YouTube AdFree';
-  container.appendChild(heading);
-
-  container.appendChild(createConfigCheckbox('enableAdBlock'));
-  container.appendChild(createConfigCheckbox('upgradeThumbnails'));
-  container.appendChild(createConfigCheckbox('hideLogo'));
-  container.appendChild(createConfigCheckbox('showWatch'));
-  container.appendChild(createConfigCheckbox('removeShorts'));
-  container.appendChild(createConfigCheckbox('forceHighResVideo'));
-  container.appendChild(createConfigCheckbox('removeEndscreen'));
-  container.appendChild(createConfigCheckbox('autoAccountSelect'));
-  container.appendChild(
-    createConfigCheckbox('enableSponsorBlock', {
-      describedBy: SPONSOR_DESCRIPTION_ID
-    })
-  );
-
-  const categoryGroup = document.createElement('fieldset');
-  const categoryLegend = document.createElement('legend');
-  categoryLegend.textContent = 'SponsorBlock categories';
-  categoryGroup.appendChild(categoryLegend);
-  for (const option of SPONSORBLOCK_CATEGORY_OPTIONS) {
-    categoryGroup.appendChild(createConfigCheckbox(option.configKey));
-  }
-  container.appendChild(categoryGroup);
-
-  const sponsorDescription = document.createElement('small');
-  sponsorDescription.id = SPONSOR_DESCRIPTION_ID;
-  sponsorDescription.className = 'ytaf-ui-sponsor';
-  sponsorDescription.textContent =
-    'Sponsor segments: data provided by sponsor.ajay.app';
-  container.appendChild(sponsorDescription);
-
-  const version = document.createElement('div');
-  version.className = 'ytaf-ui-version';
-  version.textContent = `v${__YTAF_VERSION__}`;
-  container.appendChild(version);
-  return container;
-}
-
-const optionsPanel = (() => {
-  try {
-    return createOptionsPanel();
-  } catch (error) {
-    for (const removeListener of configDisposers.splice(0)) {
-      try {
-        removeListener();
-      } catch (cleanupError) {
-        console.warn(
-          '[ui] Unable to roll back a settings listener',
-          cleanupError
-        );
-      }
-    }
-    restoreSpatialNavigation();
-    throw error;
-  }
-})();
+/** @type {HTMLElement} */
+let optionsPanel = document.createElement('div');
+/** @type {{ element: HTMLElement, dispose: () => void } | null} */
+let settingsPanel = null;
 
 function restoreModalBackground() {
   modalBodyObserver?.disconnect();
@@ -318,17 +236,9 @@ function showOptionsPanel(visible = true) {
   }
 }
 
-const previousOptionsPanelDescriptor = Object.getOwnPropertyDescriptor(
-  window,
-  'ytaf_showOptionsPanel'
-);
+/** @type {PropertyDescriptor | undefined} */
+let previousOptionsPanelDescriptor;
 let ownsOptionsPanelGlobal = false;
-try {
-  window.ytaf_showOptionsPanel = showOptionsPanel;
-  ownsOptionsPanelGlobal = window.ytaf_showOptionsPanel === showOptionsPanel;
-} catch (error) {
-  console.warn('[ui] Unable to expose the settings panel command', error);
-}
 
 /** @param {KeyboardEvent} event */
 function handlePanelKeyDown(event) {
@@ -383,8 +293,6 @@ function handlePanelKeyDown(event) {
   }
 }
 
-optionsPanel.addEventListener('keydown', handlePanelKeyDown, true);
-
 /** @param {FocusEvent} event */
 function trapPanelFocus(event) {
   if (
@@ -395,63 +303,6 @@ function trapPanelFocus(event) {
   }
   (getFocusablePanelElements()[0] ?? optionsPanel).focus();
   event.stopPropagation();
-}
-
-document.addEventListener('focusin', trapPanelFocus, true);
-
-/** @param {HTMLElement} element */
-function removeNotification(element) {
-  const timers = notificationTimers.get(element) ?? [];
-  for (const timer of timers) window.clearTimeout(timer);
-  notificationTimers.delete(element);
-  element.remove();
-}
-
-/** @param {string} text @param {number} time @param {string} color */
-export function showNotification(text, time = 3000, color = 'grey') {
-  if (disposed || !document.body) return;
-  const duration = Number.isFinite(time) ? Math.max(0, time) : 3000;
-  let container = document.querySelector('.ytaf-notification-container');
-  if (!(container instanceof HTMLElement)) {
-    container = document.createElement('div');
-    container.className = 'ytaf-notification-container';
-    container.setAttribute('role', 'status');
-    container.setAttribute('aria-live', 'polite');
-    container.setAttribute('aria-atomic', 'false');
-    document.body.appendChild(container);
-  }
-
-  while (container.children.length >= 5) {
-    const oldest = container.firstElementChild;
-    if (oldest instanceof HTMLElement) removeNotification(oldest);
-    else oldest?.remove();
-  }
-
-  const element = document.createElement('div');
-  const message = document.createElement('div');
-  message.textContent = text;
-  message.className = 'message message-hidden';
-  message.style.borderColor = COLOR_MAP[color] || color;
-  element.appendChild(message);
-  container.appendChild(element);
-
-  const revealTimer = window.setTimeout(() => {
-    if (document.documentElement.contains(element)) {
-      message.classList.remove('message-hidden');
-    }
-  }, 100);
-  const hideTimer = window.setTimeout(
-    () => {
-      message.classList.add('message-hidden');
-      const removeTimer = window.setTimeout(
-        () => removeNotification(element),
-        1_000
-      );
-      notificationTimers.get(element)?.push(removeTimer);
-    },
-    Math.max(100, duration)
-  );
-  notificationTimers.set(element, [revealTimer, hideTimer]);
 }
 
 function initHideLogo() {
@@ -476,8 +327,16 @@ function initHideLogo() {
 
 function removeQualityRootClass() {
   if (document.body?.classList.contains('app-quality-root')) {
+    qualityRootClassOwners.add(document.body);
     document.body.classList.remove('app-quality-root');
   }
+}
+
+function restoreQualityRootClasses() {
+  for (const body of qualityRootClassOwners) {
+    body.classList.add('app-quality-root');
+  }
+  qualityRootClassOwners.clear();
 }
 
 function bindBodyFeatures() {
@@ -511,7 +370,18 @@ function getScreenHiddenVideo() {
     return selected;
   }
   const currentConnected = document.documentElement.contains(audioOnlyVideo);
-  if (currentConnected && audioOnlyVideo.ended !== true) {
+  if (!selected) {
+    return currentConnected && audioOnlyVideo.ended !== true
+      ? audioOnlyVideo
+      : null;
+  }
+  const selectedRect = selected.getBoundingClientRect();
+  const currentRect = audioOnlyVideo.getBoundingClientRect();
+  const selectedArea = Math.max(0, selectedRect.width * selectedRect.height);
+  const currentArea = Math.max(0, currentRect.width * currentRect.height);
+  const selectedIsActive =
+    selected.paused === false || selectedArea > currentArea;
+  if (currentConnected && audioOnlyVideo.ended !== true && !selectedIsActive) {
     return audioOnlyVideo;
   }
   return selected;
@@ -620,12 +490,26 @@ function toggleAudioOnly() {
   }
 
   audioOnlyEnabled = true;
+  let initiallyApplied = false;
   try {
     unsubscribeScreenHiddenDOM = acquireTransactionalOwnership({
-      apply: applyScreenHiddenState,
+      apply: () => {
+        initiallyApplied = applyScreenHiddenState();
+        // The player is created asynchronously during startup and SPA
+        // navigation. Owning the observer is a valid pending state: it applies
+        // the mode as soon as the associated video and controls exist.
+        return true;
+      },
       subscribe: () =>
         subscribeDOMMutations(queueScreenHiddenState, { delayMs: 25 }),
-      notify: () => showNotification('Screen hidden: Enabled', 2000, 'blue'),
+      notify: () =>
+        showNotification(
+          initiallyApplied
+            ? 'Screen hidden: Enabled'
+            : 'Screen hidden: Waiting for player',
+          2000,
+          'blue'
+        ),
       rollback: () => {
         audioOnlyEnabled = false;
         restoreScreenHiddenStyles();
@@ -665,10 +549,6 @@ function handleGlobalRemoteKey(event) {
   return false;
 }
 
-document.addEventListener('keydown', handleGlobalRemoteKey, true);
-document.addEventListener('keypress', handleGlobalRemoteKey, true);
-document.addEventListener('keyup', handleGlobalRemoteKey, true);
-
 function initializeUIFixes() {
   if (disposed || initialized || !document.body) return;
   initialized = true;
@@ -692,17 +572,44 @@ function initializeUIFixes() {
   }
 }
 
-if (document.body) initializeUIFixes();
-else {
-  document.addEventListener('DOMContentLoaded', initializeUIFixes, {
-    once: true
-  });
+export function installUI() {
+  if (installed) return;
+  installed = true;
+  disposed = false;
+  try {
+    installSpatialNavigationPolyfill();
+    configureSpatialNavigation();
+    settingsPanel = createSettingsPanel();
+    optionsPanel = settingsPanel.element;
+    previousOptionsPanelDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      'ytaf_showOptionsPanel'
+    );
+    window.ytaf_showOptionsPanel = showOptionsPanel;
+    ownsOptionsPanelGlobal = window.ytaf_showOptionsPanel === showOptionsPanel;
+    optionsPanel.addEventListener('keydown', handlePanelKeyDown, true);
+    document.addEventListener('focusin', trapPanelFocus, true);
+    document.addEventListener('keydown', handleGlobalRemoteKey, true);
+    document.addEventListener('keypress', handleGlobalRemoteKey, true);
+    document.addEventListener('keyup', handleGlobalRemoteKey, true);
+    if (document.body) initializeUIFixes();
+    else {
+      document.addEventListener('DOMContentLoaded', initializeUIFixes, {
+        once: true
+      });
+    }
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }
 
 export function dispose() {
-  if (disposed) return;
+  if (!installed) return;
+  installed = false;
   showOptionsPanel(false);
   disposed = true;
+  initialized = false;
   optionsPanelVisible = false;
   restoreModalBackground();
   audioOnlyEnabled = false;
@@ -713,13 +620,15 @@ export function dispose() {
   bodyClassObserver?.disconnect();
   bodyClassObserver = null;
   observedBody = null;
+  restoreQualityRootClasses();
   if (introNotificationTimer !== null) {
     window.clearTimeout(introNotificationTimer);
     introNotificationTimer = null;
   }
-  for (const element of notificationTimers.keys()) removeNotification(element);
-  document.querySelector('.ytaf-notification-container')?.remove();
+  disposeNotifications();
   for (const removeListener of configDisposers.splice(0)) removeListener();
+  settingsPanel?.dispose();
+  settingsPanel = null;
   logoStyle?.remove();
   logoStyle = null;
   optionsPanel.remove();
@@ -747,5 +656,8 @@ export function dispose() {
       console.warn('[ui] Unable to restore settings panel command', error);
     }
   }
+  ownsOptionsPanelGlobal = false;
+  previousOptionsPanelDescriptor = undefined;
   restoreSpatialNavigation();
+  disposeSpatialNavigationPolyfill();
 }

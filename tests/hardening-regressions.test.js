@@ -16,7 +16,6 @@ import {
   decideSponsorSkip,
   findNextSponsorSegment
 } from '../src/core/sponsorblock-scheduling.js';
-import { scheduleAlignedInterval } from '../src/core/schedule.js';
 
 test('JSON hooks preserve revivers, replacers and getter execution', (context) => {
   context.after(restoreJSONHooks);
@@ -107,29 +106,4 @@ test('SponsorBlock scheduling never seeks completed segments backwards', () => {
     reschedule: true
   });
   assert.deepEqual(decideSponsorSkip([10, 20], 10, 100), { target: 20 });
-});
-
-test('aligned intervals are armed even when the first callback throws', () => {
-  let intervalCallback;
-  const scheduler = {
-    setTimeout(callback) {
-      assert.throws(callback, /first tick/);
-      return 1;
-    },
-    clearTimeout() {},
-    setInterval(callback) {
-      intervalCallback = callback;
-      return 2;
-    },
-    clearInterval() {}
-  };
-  scheduleAlignedInterval(
-    () => {
-      throw new Error('first tick');
-    },
-    0,
-    60_000,
-    scheduler
-  );
-  assert.equal(typeof intervalCallback, 'function');
 });

@@ -42,7 +42,8 @@ function getBaseURL(target: FetchWindow) {
 
 export class FetchRegistry extends CustomEventTarget<EventMap> {
   readonly #target: FetchWindow;
-  #originalFetch: typeof fetch;
+  #delegateFetch: typeof fetch;
+  #customFetch: typeof fetch;
   #disposed = false;
 
   private constructor(target: FetchWindow) {
@@ -51,7 +52,8 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
       throw new TypeError('Fetch hook target must expose a fetch function');
     }
     this.#target = target;
-    this.#originalFetch = target.fetch;
+    this.#delegateFetch = target.fetch;
+    this.#customFetch = this.#createCustomFetch(this.#delegateFetch);
     try {
       target.fetch = this.#customFetch;
       if (target.fetch !== this.#customFetch) {
@@ -59,8 +61,8 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
       }
     } catch (error) {
       try {
-        if (target.fetch !== this.#originalFetch) {
-          target.fetch = this.#originalFetch;
+        if (target.fetch !== this.#delegateFetch) {
+          target.fetch = this.#delegateFetch;
         }
       } catch (rollbackError) {
         console.warn('[fetch] Unable to roll back fetch hook', rollbackError);
@@ -69,23 +71,33 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
     }
   }
 
-  #customFetch = async (resource: FetchTarget, init?: RequestInit) => {
-    const url = resourceURL(resource, getBaseURL(this.#target));
-    const reqAllowed = this.dispatchEvent(
-      new TypedCustomEvent('request', {
-        detail: { url, resource, init },
-        cancelable: true
-      })
-    );
-    if (!reqAllowed) throw new TypeError('Failed to fetch');
+  #createCustomFetch(delegate: typeof fetch) {
+    const hook = async (resource: FetchTarget, init?: RequestInit) => {
+      const ownsDispatch = this.#customFetch === hook;
+      if (ownsDispatch) {
+        const url = resourceURL(resource, getBaseURL(this.#target));
+        const reqAllowed = this.dispatchEvent(
+          new TypedCustomEvent('request', {
+            detail: { url, resource, init },
+            cancelable: true
+          })
+        );
+        if (!reqAllowed) throw new TypeError('Failed to fetch');
+      }
 
-    const response = await Reflect.apply(this.#originalFetch, this.#target, [
-      resource,
-      init
-    ] as Parameters<typeof fetch>);
-    this.dispatchEvent(new TypedCustomEvent('response', { detail: response }));
-    return response;
-  };
+      const response = await Reflect.apply(delegate, this.#target, [
+        resource,
+        init
+      ] as Parameters<typeof fetch>);
+      if (ownsDispatch) {
+        this.dispatchEvent(
+          new TypedCustomEvent('response', { detail: response })
+        );
+      }
+      return response;
+    };
+    return hook as typeof fetch;
+  }
 
   private owns(target: FetchWindow) {
     return this.#target === target;
@@ -102,9 +114,10 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
       throw new TypeError('Fetch replacement must be callable');
     }
     const replacement = this.#target.fetch;
+    const nextHook = this.#createCustomFetch(replacement);
     try {
-      this.#target.fetch = this.#customFetch;
-      if (this.#target.fetch !== this.#customFetch) {
+      this.#target.fetch = nextHook;
+      if (this.#target.fetch !== nextHook) {
         throw new TypeError('Unable to bind fetch replacement hook');
       }
     } catch (error) {
@@ -120,7 +133,8 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
       }
       throw error;
     }
-    this.#originalFetch = replacement;
+    this.#delegateFetch = replacement;
+    this.#customFetch = nextHook;
   }
 
   static getInstance(target: FetchWindow = window) {
@@ -135,7 +149,7 @@ export class FetchRegistry extends CustomEventTarget<EventMap> {
     this.#disposed = true;
     try {
       if (this.#target.fetch === this.#customFetch) {
-        this.#target.fetch = this.#originalFetch;
+        this.#target.fetch = this.#delegateFetch;
       }
     } catch (error) {
       console.warn('[fetch] Unable to restore host fetch', error);

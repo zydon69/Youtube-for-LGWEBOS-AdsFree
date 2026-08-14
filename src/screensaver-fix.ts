@@ -186,9 +186,12 @@ function initializeScreensaverFix() {
   }
 }
 
-if (document.body) initializeScreensaverFix();
-else {
-  document.addEventListener('DOMContentLoaded', initializeScreensaverFix, {
-    once: true
-  });
+export function installScreensaverFix() {
+  if (initialized) return;
+  if (document.body) initializeScreensaverFix();
+  else {
+    document.addEventListener('DOMContentLoaded', initializeScreensaverFix, {
+      once: true
+    });
+  }
 }

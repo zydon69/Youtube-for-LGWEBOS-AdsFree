@@ -41,6 +41,7 @@ test('language setting interception preserves siblings and is removable', async 
   try {
     languageFix = await import('../src/lang-settings-fix.ts');
     appAPI = await import('../src/app_api/index.ts');
+    await languageFix.installLanguageSettingsFix();
     await waitForWrapper(instance, originalResolveCommand);
     assert.notEqual(instance.resolveCommand, originalResolveCommand);
 

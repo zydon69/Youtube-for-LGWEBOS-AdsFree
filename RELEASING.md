@@ -5,11 +5,13 @@
 2. Start from a clean, reviewed commit on `main`, fetch the intended remote,
    and verify that `git status --short` is empty.
 3. Run `pnpm install --frozen-lockfile`.
-4. Run `pnpm package`. It runs the complete QA gate, creates the SBOM and
+4. Create and verify the signed `v<version>` tag on that commit, then push the
+   commit and tag. Release tooling checks the live `origin/main`, repository
+   URL, exact tag and signature and rejects hidden Git index flags.
+5. Run `pnpm package`. It runs the complete QA gate, creates the SBOM and
    package, and independently rebuilds and verifies every release artifact.
-5. Inspect the QA output and SBOM, then install the verified IPK on every
+6. Inspect the QA output and SBOM, then install the verified IPK on every
    supported webOS engine family.
-6. Sign and verify the Git tag that names the release commit.
 7. Sign the generated `youtube.leanback.v4_<version>_all.sha256` file with an
    externally managed maintainer key.
 8. Publish the IPK, `youtube.leanback.v4.manifest.json`, `sbom.cdx.json`,

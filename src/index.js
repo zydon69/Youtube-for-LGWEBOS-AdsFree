@@ -1,4 +1,4 @@
-import { extractLaunchParams, handleLaunch } from './utils';
+import { extractLaunchParams, handleLaunch } from './utils.js';
 
 function main() {
   handleLaunch(extractLaunchParams());

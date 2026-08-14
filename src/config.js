@@ -14,7 +14,7 @@ const optionEntries = [
   ['upgradeThumbnails', { default: false, desc: 'Upgrade thumbnail quality' }],
   [
     'removeShorts',
-    { default: false, desc: 'Remove Shorts from subscriptions' }
+    { default: false, desc: 'Remove Shorts from YouTube browsing surfaces' }
   ],
   [
     'enableSponsorBlock',
@@ -106,34 +106,49 @@ function loadStoredConfig() {
   let shouldPersist;
   let removeLegacy = false;
 
+  let storage = null;
   try {
-    const storage = window.localStorage.getItem(CONFIG_KEY);
-    if (storage !== null) {
+    storage = window.localStorage.getItem(CONFIG_KEY);
+  } catch (error) {
+    console.warn('[config] Unable to read v2 configuration:', error);
+  }
+  if (storage !== null) {
+    try {
       const parsed = JSON.parse(storage);
       normalized = normalizeConfig(parsed, defaultConfig);
       shouldPersist = JSON.stringify(parsed) !== JSON.stringify(normalized);
-    } else {
-      const legacyStorage = window.localStorage.getItem(LEGACY_CONFIG_KEY);
-      if (legacyStorage !== null) {
+    } catch (error) {
+      console.warn('[config] Invalid v2 configuration:', error);
+    }
+  }
+
+  if (shouldPersist === undefined) {
+    let legacyStorage = null;
+    try {
+      legacyStorage = window.localStorage.getItem(LEGACY_CONFIG_KEY);
+    } catch (error) {
+      console.warn('[config] Unable to read legacy configuration:', error);
+    }
+    if (legacyStorage !== null) {
+      try {
         normalized = normalizeConfig(JSON.parse(legacyStorage), defaultConfig);
         // Previous releases enabled the third-party service by default. An
         // upgrade must require a fresh, explicit opt-in.
         normalized.enableSponsorBlock = false;
         shouldPersist = true;
         removeLegacy = true;
-      } else {
-        shouldPersist = true;
+      } catch (error) {
+        console.warn('[config] Invalid legacy configuration:', error);
       }
     }
-  } catch (err) {
-    // Repair malformed/partially written values so every following launch has
-    // a canonical schema instead of repeatedly parsing the same corruption.
-    console.warn('Error parsing stored config:', err);
-    normalized = normalizeConfig(null, defaultConfig);
-    shouldPersist = true;
+    if (shouldPersist === undefined) {
+      normalized = normalizeConfig(null, defaultConfig);
+      shouldPersist = true;
+    }
   }
 
   if (shouldPersist) persistNormalizedConfig(normalized, removeLegacy);
+
   return normalized;
 }
 

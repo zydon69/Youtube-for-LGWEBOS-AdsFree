@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **WARNING: Please read this carefully to avoid submitting useless bug reports that will be closed without a response.**
+        Please include the requested version and reproduction information so maintainers can investigate the report.
 
         This form is for reporting bugs or issues with youtube-webos (YTAF). That is, either features provided by youtube-webos (e.g. ad blocking, sponsorblock, etc.), or behavior that differs from the stock YouTube app.
 
@@ -25,13 +25,15 @@ body:
     attributes:
       label: YTAF Version
       description: The version of the YTAF app you are using.
-      placeholder: e.g. 0.4.1
+      placeholder: e.g. 0.5.7
     validations:
       required: true
   - type: markdown
     attributes:
       value: |
         This information can all be found in /var/run/nyx/device_info.json and /var/run/nyx/os_info.json.
+
+        Copy only the requested values. Do not paste either complete JSON file; redact serial numbers, account data, network addresses and any other identifier not requested below.
 
         In `device_info.json`:
           * SoC: `device_name`

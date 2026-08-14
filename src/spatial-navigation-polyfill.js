@@ -15,12 +15,25 @@
  * Licensed under the MIT license (MIT)
  */
 
-(function () {
+let activeDisposer = null;
+
+export function installSpatialNavigationPolyfill() {
+  if (activeDisposer) return activeDisposer;
 
   // The polyfill must not be executed, if it's already enabled via browser engine or browser extensions.
   if (typeof window.navigate === 'function') {
-    return;
+    return () => false;
   }
+
+  const previousNavigateDescriptor = Object.getOwnPropertyDescriptor(window, 'navigate');
+  const previousSpatialNavigationDescriptor = Object.getOwnPropertyDescriptor(window, '__spatialNavigation__');
+  const previousElementDescriptors = new Map([
+    ['spatialNavigationSearch', Object.getOwnPropertyDescriptor(window.Element.prototype, 'spatialNavigationSearch')],
+    ['focusableAreas', Object.getOwnPropertyDescriptor(window.Element.prototype, 'focusableAreas')],
+    ['getSpatialNavigationContainer', Object.getOwnPropertyDescriptor(window.Element.prototype, 'getSpatialNavigationContainer')]
+  ]);
+  let handlersInstalled = false;
+  let loadHandlerInstalled = false;
 
   const ARROW_KEY_CODE = {37: 'left', 38: 'up', 39: 'right', 40: 'down'};
   const TAB_KEY_CODE = 9;
@@ -127,67 +140,75 @@
    * This function defines which input methods trigger the spatial navigation behavior.
    * @function spatialNavigationHandler
    */
+  function handleSpatialKeyDown(e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const currentKeyMode = getConfiguredKeyMode();
+    const eventTarget = document.activeElement;
+    const dir = ARROW_KEY_CODE[e.keyCode];
+
+    if (e.keyCode === TAB_KEY_CODE) {
+      startingPoint = null;
+    }
+
+    if (!currentKeyMode ||
+        (currentKeyMode === 'NONE') ||
+        ((currentKeyMode === 'SHIFTARROW') && !e.shiftKey) ||
+        ((currentKeyMode === 'ARROW') && e.shiftKey))
+      return;
+
+    if (!e.defaultPrevented) {
+      let focusNavigableArrowKey = {left: true, up: true, right: true, down: true};
+
+      // Edge case (text input, area) : Don't move focus, just navigate cursor in text area
+      if ((eventTarget.nodeName === 'INPUT') || eventTarget.nodeName === 'TEXTAREA') {
+        focusNavigableArrowKey = handlingEditableElement(e);
+      }
+
+      if (focusNavigableArrowKey[dir]) {
+        e.preventDefault();
+        mapOfBoundRect = new Map();
+
+        navigate(dir);
+
+        mapOfBoundRect = null;
+        startingPoint = null;
+      }
+    }
+  }
+
+  function handleSpatialMouseUp(e) {
+    startingPoint = {x: e.clientX, y: e.clientY};
+  }
+
+  function handleSpatialFocusIn(e) {
+    if (e.target !== window) {
+      savedSearchOrigin.element = e.target;
+      savedSearchOrigin.rect = e.target.getBoundingClientRect();
+    }
+  }
+
   function spatialNavigationHandler() {
+    if (handlersInstalled) return;
+    handlersInstalled = true;
     /*
      * keydown EventListener :
      * If arrow key pressed, get the next focusing element and send it to focusing controller
      */
-    window.addEventListener('keydown', (e) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const currentKeyMode = getConfiguredKeyMode();
-      const eventTarget = document.activeElement;
-      const dir = ARROW_KEY_CODE[e.keyCode];
-
-      if (e.keyCode === TAB_KEY_CODE) {
-        startingPoint = null;
-      }
-
-      if (!currentKeyMode ||
-          (currentKeyMode === 'NONE') ||
-          ((currentKeyMode === 'SHIFTARROW') && !e.shiftKey) ||
-          ((currentKeyMode === 'ARROW') && e.shiftKey))
-        return;
-
-      if (!e.defaultPrevented) {
-        let focusNavigableArrowKey = {left: true, up: true, right: true, down: true};
-
-        // Edge case (text input, area) : Don't move focus, just navigate cursor in text area
-        if ((eventTarget.nodeName === 'INPUT') || eventTarget.nodeName === 'TEXTAREA') {
-          focusNavigableArrowKey = handlingEditableElement(e);
-        }
-
-        if (focusNavigableArrowKey[dir]) {
-          e.preventDefault();
-          mapOfBoundRect = new Map();
-
-          navigate(dir);
-
-          mapOfBoundRect = null;
-          startingPoint = null;
-        }
-      }
-    });
+    window.addEventListener('keydown', handleSpatialKeyDown);
 
     /*
      * mouseup EventListener :
      * If the mouse click a point in the page, the point will be the starting point.
      * NOTE: Let UA set the spatial navigation starting point based on click
      */
-    document.addEventListener('mouseup', (e) => {
-      startingPoint = {x: e.clientX, y: e.clientY};
-    });
+    document.addEventListener('mouseup', handleSpatialMouseUp);
 
     /*
      * focusin EventListener :
      * When the element get the focus, save it and its DOMRect for resetting the search origin
      * if it disappears.
      */
-    window.addEventListener('focusin', (e) => {
-      if (e.target !== window) {
-        savedSearchOrigin.element = e.target;
-        savedSearchOrigin.rect = e.target.getBoundingClientRect();
-      }
-    });
+    window.addEventListener('focusin', handleSpatialFocusIn);
   }
 
   /**
@@ -1802,10 +1823,46 @@
   
   if (document.readyState === 'loading') {
     window.addEventListener('load', spatialNavigationHandler, {once: true});
+    loadHandlerInstalled = true;
   } else {
     spatialNavigationHandler();
   }
-})();
+
+  function restoreDescriptor(target, name, descriptor) {
+    if (descriptor) Object.defineProperty(target, name, descriptor);
+    else Reflect.deleteProperty(target, name);
+  }
+
+  activeDisposer = () => {
+    if (!activeDisposer) return false;
+    if (loadHandlerInstalled) {
+      window.removeEventListener('load', spatialNavigationHandler);
+      loadHandlerInstalled = false;
+    }
+    if (handlersInstalled) {
+      window.removeEventListener('keydown', handleSpatialKeyDown);
+      document.removeEventListener('mouseup', handleSpatialMouseUp);
+      window.removeEventListener('focusin', handleSpatialFocusIn);
+      handlersInstalled = false;
+    }
+    restoreDescriptor(window, 'navigate', previousNavigateDescriptor);
+    restoreDescriptor(window, '__spatialNavigation__', previousSpatialNavigationDescriptor);
+    for (const [name, descriptor] of previousElementDescriptors) {
+      restoreDescriptor(window.Element.prototype, name, descriptor);
+    }
+    mapOfBoundRect = null;
+    startingPoint = null;
+    savedSearchOrigin = {element: null, rect: null};
+    searchOriginRect = null;
+    activeDisposer = null;
+    return true;
+  };
+  return activeDisposer;
+}
+
+export function disposeSpatialNavigationPolyfill() {
+  return activeDisposer?.() ?? false;
+}
 
 /**
  * Force babel to interpret this file as ESM so it

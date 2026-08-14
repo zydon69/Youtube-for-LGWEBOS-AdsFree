@@ -1,0 +1,2 @@
+export const MAX_JSON_TRANSFORM_BYTES = 8 * 1024 * 1024;
+export const MAX_JSON_TRANSFORM_NODES = 100_000;

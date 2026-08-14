@@ -24,6 +24,9 @@ export function cloneTransformValue<T>(value: T): T {
         if (existing) {
           clonedChild = existing;
         } else {
+          if (clones.size >= MAX_JSON_TRANSFORM_NODES) {
+            throw new RangeError('JSON transform graph exceeds node limit');
+          }
           const childClone = Array.isArray(child) ? [] : {};
           clones.set(child, childClone);
           pending.push({ source: child, target: childClone });
@@ -42,3 +45,4 @@ export function cloneTransformValue<T>(value: T): T {
 
   return root as T;
 }
+import { MAX_JSON_TRANSFORM_NODES } from './transform-limits.js';

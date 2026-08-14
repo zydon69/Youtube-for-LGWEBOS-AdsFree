@@ -33,6 +33,7 @@ import {
   sha256,
   writeFileAtomic
 } from './package-contract.js';
+import { assertCurrentQAReceipt } from './qa-receipt.js';
 
 const SOURCE_DATE = new Date('2000-01-01T00:00:00.000Z');
 
@@ -140,8 +141,15 @@ export async function createPackage(options = {}) {
     JSON.parse(await readFile(join(distDirectory, 'appinfo.json'), 'utf8')),
     pkgJson.version
   );
-  const provenance = await getBuildProvenance(mode);
+  const provenance = await getBuildProvenance(mode, pkgJson.version);
   const distTreeSha256 = await hashDirectory(distDirectory, EXPECTED_APP_FILES);
+  const qaReceipt = await assertCurrentQAReceipt();
+  if (
+    qaReceipt.sourceTreeSha256 !== provenance.sourceTreeSha256 ||
+    qaReceipt.distTreeSha256 !== distTreeSha256
+  ) {
+    throw new Error('QA receipt is not bound to the package inputs');
+  }
   const sbom = JSON.parse(await readFile(sbomPath, 'utf8'));
   assertSbomProvenance(sbom, provenance, distTreeSha256);
   const sbomBytes = await readFile(sbomPath);
@@ -220,6 +228,7 @@ export async function createPackage(options = {}) {
       sbom: sbomSha256,
       distTree: distTreeSha256
     });
+    Object.assign(manifest.releaseEvidence, { qa: qaReceipt });
     const manifestBytes = Buffer.from(
       `${JSON.stringify(manifest, null, 2)}\n`,
       'utf8'
@@ -236,6 +245,9 @@ export async function createPackage(options = {}) {
       },
       pkgJson.version
     );
+    Object.assign(provenanceStatement.predicate.runDetails.metadata, {
+      qa: qaReceipt
+    });
     const provenanceBytes = Buffer.from(
       `${JSON.stringify(provenanceStatement, null, 2)}\n`,
       'utf8'

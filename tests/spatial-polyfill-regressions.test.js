@@ -21,8 +21,10 @@ test('spatial navigation exposes non-enumerable APIs and accepts zero coordinate
     DOMRect: browser.DOMRect
   });
 
+  let spatialNavigation;
   try {
-    await import('../src/spatial-navigation-polyfill.js');
+    spatialNavigation = await import('../src/spatial-navigation-polyfill.js');
+    spatialNavigation.installSpatialNavigationPolyfill();
 
     for (const name of [
       'spatialNavigationSearch',
@@ -45,7 +47,15 @@ test('spatial navigation exposes non-enumerable APIs and accepts zero coordinate
     browser.__spatialNavigation__.setStartingPoint(0, 0);
     browser.navigate('right');
     assert.equal(hitTests, 1);
+
+    assert.equal(spatialNavigation.disposeSpatialNavigationPolyfill(), true);
+    assert.equal(browser.navigate, undefined);
+    assert.equal(browser.__spatialNavigation__, undefined);
+    assert.equal(browser.Element.prototype.spatialNavigationSearch, undefined);
+    spatialNavigation.installSpatialNavigationPolyfill();
+    assert.equal(typeof browser.navigate, 'function');
   } finally {
+    spatialNavigation?.disposeSpatialNavigationPolyfill();
     Object.assign(globalThis, previous);
     await browser.close();
   }

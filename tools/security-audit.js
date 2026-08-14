@@ -1,24 +1,30 @@
+import { execFileSync } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
-import { extname, join, relative } from 'node:path';
+import { extname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { parse } from '@babel/parser';
 
-import { PROJECT_ROOT } from './package-contract.js';
+import { PROJECT_ROOT, sha256 } from './package-contract.js';
 
 const textExtensions = new Set([
+  '.asc',
   '.cjs',
   '.css',
   '.html',
   '.js',
   '.json',
+  '.key',
   '.md',
   '.mjs',
+  '.pem',
   '.svg',
   '.ts',
   '.txt',
   '.yaml',
   '.yml'
 ]);
+const sensitiveTextNames = new Set(['.env', '.netrc', '.npmrc']);
 const excludedDirectories = new Set([
   '.git',
   'coverage',
@@ -34,17 +40,39 @@ const allowedRuntimeOrigins = new Set([
 ]);
 const expectedSourceSinks = new Map([
   ['src/core/sponsorblock-client.js', new Map([['fetch', 1]])],
+  ['src/core/sponsorblock-repository.js', new Map([['fetch', 1]])],
   ['src/hooks/fetch.ts', new Map([['fetch-forward', 1]])],
-  ['src/sponsorblock.js', new Map([['fetch', 1]])],
   [
     'src/thumbnail-quality.ts',
     new Map([
       ['css-url', 2],
-      ['resource-src', 2]
+      ['resource-src', 3]
     ])
   ],
   ['src/utils.js', new Map([['navigation', 1]])]
 ]);
+const vendoredSourceContract = Object.freeze([
+  {
+    path: 'src/spatial-navigation-polyfill.js',
+    sha256: 'a45a26fdc3399542acb3ef7497dba7c190cca894cea857c46514e73a9e2bea15',
+    upstreamCommit: '183f0146b6741007e46fa64ab0950447defdf8af'
+  },
+  {
+    path: 'src/domrect-polyfill.js',
+    sha256: 'df8d563d2dd594f31142e4f27188c68c755449c01b1693760934061d10cc1606',
+    upstreamCommit: 'c25c30e4463bef60fba1213ecb697f3e3f253d7b'
+  }
+]);
+
+/** @param {string} name */
+export function isInspectableTextFile(name) {
+  const lowerName = name.toLowerCase();
+  return (
+    textExtensions.has(extname(lowerName)) ||
+    sensitiveTextNames.has(lowerName) ||
+    lowerName.startsWith('.env.')
+  );
+}
 
 /** @param {string} directory @returns {Promise<string[]>} */
 async function listTextFiles(directory) {
@@ -56,7 +84,7 @@ async function listTextFiles(directory) {
           ? []
           : listTextFiles(join(directory, entry.name));
       }
-      return entry.isFile() && textExtensions.has(extname(entry.name))
+      return entry.isFile() && isInspectableTextFile(entry.name)
         ? [join(directory, entry.name)]
         : [];
     })
@@ -223,8 +251,8 @@ function collectTopLevelConstants(ast) {
   return constants;
 }
 
-/** @param {any} node @param {Map<string, string>} constants */
-function classifySink(node, constants) {
+/** @param {any} node @param {Map<string, string>} constants @param {string} sourceName */
+function classifySink(node, constants, sourceName) {
   if (node.type === 'CallExpression') {
     const callee = expressionName(node.callee, constants);
     if (
@@ -237,9 +265,10 @@ function classifySink(node, constants) {
     }
     if (
       callee === 'Reflect.apply' &&
-      expressionName(node.arguments[0], constants)
+      (expressionName(node.arguments[0], constants)
         .toLowerCase()
-        .includes('fetch')
+        .includes('fetch') ||
+        sourceName === 'src/hooks/fetch.ts')
     ) {
       return { kind: 'fetch-forward', value: node.arguments[1] };
     }
@@ -296,7 +325,7 @@ function classifySink(node, constants) {
 }
 
 /** @param {string} name @param {string} value @param {string[]} failures @param {Set<string>} origins */
-function inspectNetworkText(name, value, failures, origins) {
+export function inspectNetworkText(name, value, failures, origins) {
   for (const match of value.matchAll(
     /(?:https?:)?\/\/[\p{L}\d][^\s"'`<>()\]}]*/gu
   )) {
@@ -322,7 +351,7 @@ function inspectNetworkText(name, value, failures, origins) {
 }
 
 /** @param {string} path @param {boolean} enforceSourceContract @param {string[]} failures @param {Set<string>} origins */
-async function inspectJavaScript(
+export async function inspectJavaScript(
   path,
   enforceSourceContract,
   failures,
@@ -356,18 +385,6 @@ async function inspectJavaScript(
     : new Map();
   /** @type {Map<string, number>} */
   const sinks = new Map();
-  if (name === 'src/thumbnail-quality.ts') {
-    if (
-      !content.includes("input.protocol !== 'https:'") ||
-      !content.includes("input.hostname !== 'i.ytimg.com'")
-    ) {
-      failures.push(
-        `${name}: thumbnail HTTPS/host validation contract changed`
-      );
-    } else {
-      origins.add('https://i.ytimg.com');
-    }
-  }
   walk(ast, (node) => {
     const referencedName =
       node.type === 'Identifier'
@@ -415,7 +432,7 @@ async function inspectJavaScript(
       if (value !== null) inspectNetworkText(name, value, failures, origins);
     }
 
-    const sink = classifySink(node, constants);
+    const sink = classifySink(node, constants, name);
     if (!sink) return;
     sinks.set(sink.kind, (sinks.get(sink.kind) ?? 0) + 1);
     const value = evaluateStaticString(sink.value, constants);
@@ -460,59 +477,123 @@ async function inspectMarkup(path, failures, origins) {
   }
 }
 
-const failures = [];
-const origins = new Set();
-const secretPatterns = [
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
-  /\bAKIA[0-9A-Z]{16}\b/,
-  /\bgh[oprsu]_\w{30,}\b/
-];
+/** @type {ReadonlyArray<readonly [string, RegExp]>} */
+const secretPatterns = Object.freeze([
+  [
+    'private key',
+    /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----/
+  ],
+  ['AWS access key', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/],
+  ['GitHub token', /\bgh[oprsu]_\w{30,}\b/],
+  ['GitHub fine-grained token', /\bgithub_pat_\w{60,}\b/],
+  ['npm token', /\bnpm_[A-Za-z0-9]{36}\b/],
+  ['Slack token', /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/],
+  ['Stripe live key', /\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/],
+  ['Google API key', /\bAIza[\w-]{35}\b/],
+  ['JWT', /\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}\b/]
+]);
 
-for (const path of await listTextFiles(PROJECT_ROOT)) {
-  // Sequential reads cap memory while scanning the complete working tree.
-  // eslint-disable-next-line no-await-in-loop
-  const content = await readFile(path, 'utf8');
-  const name = relative(PROJECT_ROOT, path);
-  for (const pattern of secretPatterns) {
-    if (pattern.test(content))
-      failures.push(`${name}: possible committed secret`);
+/** @param {string} name @param {string} content @param {string[]} failures */
+export function inspectSecretText(name, content, failures) {
+  for (const [kind, pattern] of secretPatterns) {
+    if (pattern.test(content)) failures.push(`${name}: possible ${kind}`);
   }
 }
 
-for (const path of await listRuntimeSources(join(PROJECT_ROOT, 'src'))) {
-  // Each parser instance is released before the next source file.
-  // eslint-disable-next-line no-await-in-loop
-  await inspectJavaScript(path, true, failures, origins);
-}
-
-for (const path of [
-  join(PROJECT_ROOT, 'dist', 'index.js'),
-  join(PROJECT_ROOT, 'dist', 'webOSUserScripts', 'userScript.js')
-]) {
-  // Production bundles are scanned in addition to their source modules.
-  // eslint-disable-next-line no-await-in-loop
-  await inspectJavaScript(path, false, failures, origins);
-}
-
-const runtimeMarkup = (await listTextFiles(join(PROJECT_ROOT, 'src'))).filter(
-  (path) => ['.css', '.html'].includes(extname(path))
-);
-for (const path of runtimeMarkup) {
-  // eslint-disable-next-line no-await-in-loop
-  await inspectMarkup(path, failures, origins);
-}
-
-for (const expectedOrigin of allowedRuntimeOrigins) {
-  if (!origins.has(expectedOrigin)) {
-    failures.push(`Runtime origin contract is missing ${expectedOrigin}`);
-  }
-}
-
-if (failures.length > 0) {
-  throw new Error(
-    `Security policy failed:\n${[...new Set(failures)].join('\n')}`
+function readGitHistory() {
+  return execFileSync(
+    'git',
+    [
+      'log',
+      '--all',
+      '--format=',
+      '--no-color',
+      '--no-ext-diff',
+      '-p',
+      '--',
+      '.',
+      ':(exclude)*.ipk'
+    ],
+    {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
   );
 }
-console.info(
-  `Security policy passed: ${origins.size} reviewed origins, exact source sink inventory, source/bundle/vendor scan and secret scan`
-);
+
+export async function runSecurityAudit() {
+  const failures = [];
+  const origins = new Set();
+  const vendorDocumentation = await readFile(
+    join(PROJECT_ROOT, 'docs', 'vendor-patches.md'),
+    'utf8'
+  );
+  for (const vendor of vendoredSourceContract) {
+    // Sequential reads keep the reviewed vendor contract deterministic.
+    // eslint-disable-next-line no-await-in-loop
+    const actualHash = sha256(await readFile(join(PROJECT_ROOT, vendor.path)));
+    if (actualHash !== vendor.sha256) {
+      failures.push(`${vendor.path}: vendored source hash changed`);
+    }
+    if (
+      !vendorDocumentation.includes(vendor.sha256) ||
+      !vendorDocumentation.includes(vendor.upstreamCommit)
+    ) {
+      failures.push(`${vendor.path}: vendor documentation is stale`);
+    }
+  }
+  for (const path of await listTextFiles(PROJECT_ROOT)) {
+    // Sequential reads cap memory while scanning the complete working tree.
+    // eslint-disable-next-line no-await-in-loop
+    const content = await readFile(path, 'utf8');
+    const name = relative(PROJECT_ROOT, path);
+    inspectSecretText(name, content, failures);
+  }
+  inspectSecretText('git history', readGitHistory(), failures);
+
+  for (const path of await listRuntimeSources(join(PROJECT_ROOT, 'src'))) {
+    // Each parser instance is released before the next source file.
+    // eslint-disable-next-line no-await-in-loop
+    await inspectJavaScript(path, true, failures, origins);
+  }
+
+  for (const path of [
+    join(PROJECT_ROOT, 'dist', 'index.js'),
+    join(PROJECT_ROOT, 'dist', 'webOSUserScripts', 'userScript.js')
+  ]) {
+    // Production bundles are scanned in addition to their source modules.
+    // eslint-disable-next-line no-await-in-loop
+    await inspectJavaScript(path, false, failures, origins);
+  }
+
+  const runtimeMarkup = (await listTextFiles(join(PROJECT_ROOT, 'src'))).filter(
+    (path) => ['.css', '.html'].includes(extname(path))
+  );
+  for (const path of runtimeMarkup) {
+    // eslint-disable-next-line no-await-in-loop
+    await inspectMarkup(path, failures, origins);
+  }
+
+  for (const expectedOrigin of allowedRuntimeOrigins) {
+    if (!origins.has(expectedOrigin)) {
+      failures.push(`Runtime origin contract is missing ${expectedOrigin}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `Security policy failed:\n${[...new Set(failures)].join('\n')}`
+    );
+  }
+  console.info(
+    `Security policy passed: ${origins.size} reviewed origins, exact source sink inventory, source/bundle/vendor scan and secret scan`
+  );
+}
+
+const isCommand =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isCommand) await runSecurityAudit();

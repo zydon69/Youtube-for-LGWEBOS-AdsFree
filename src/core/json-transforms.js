@@ -61,9 +61,9 @@ function sectionListHasAds(sectionListRenderer) {
 export function hasRemovableAds(value) {
   if (!isRecord(value)) return false;
   if (
-    Object.hasOwn(value, 'adPlacements') ||
-    Object.hasOwn(value, 'adSlots') ||
-    Object.hasOwn(value, 'playerAds')
+    Array.isArray(value.adPlacements) ||
+    Array.isArray(value.adSlots) ||
+    Array.isArray(value.playerAds)
   ) {
     return true;
   }
@@ -100,9 +100,9 @@ export function hasRemovableAds(value) {
 export function removeAdsFromResponse(value) {
   if (!isRecord(value)) return value;
 
-  if (Object.hasOwn(value, 'adPlacements')) delete value.adPlacements;
-  if (Object.hasOwn(value, 'adSlots')) delete value.adSlots;
-  if (Object.hasOwn(value, 'playerAds')) delete value.playerAds;
+  if (Array.isArray(value.adPlacements)) delete value.adPlacements;
+  if (Array.isArray(value.adSlots)) delete value.adSlots;
+  if (Array.isArray(value.playerAds)) delete value.playerAds;
 
   const contents = getRecord(value, 'contents');
   const tvBrowse = getRecord(contents, 'tvBrowseRenderer');
@@ -156,6 +156,7 @@ function someRecord(root, visitor) {
     }
 
     visited.add(current);
+    if (visited.size > MAX_JSON_TRANSFORM_NODES) return false;
     if (isRecord(current) && visitor(current)) return true;
 
     for (const child of Object.values(current)) {
@@ -213,44 +214,92 @@ export function hasRemovableEndscreen(value) {
   });
 }
 
-/** @param {any} value */
-export function removeShortsFromResponse(value) {
-  walkRecords(value, (record) => {
+/**
+ * @param {unknown} value
+ * @param {{ shorts: boolean, endscreen: boolean }} options
+ */
+export function hasRemovableBrowseFeatures(value, options) {
+  return someRecord(value, (record) => {
+    if (options.endscreen) {
+      const endscreen = getRecord(record, 'endscreen');
+      if (endscreen && isRecord(endscreen.endscreenRenderer)) return true;
+    }
+    if (!options.shorts) return false;
     for (const key of ['gridRenderer', 'gridContinuation']) {
       const container = getRecord(record, key);
       if (!container || !Array.isArray(container.items)) continue;
-
-      container.items = container.items.filter((item) => {
+      for (const item of container.items) {
         const tile = getRecord(item, 'tileRenderer');
         const command = getRecord(tile, 'onSelectCommand');
-        return !getRecord(command, 'reelWatchEndpoint');
-      });
+        if (getRecord(command, 'reelWatchEndpoint')) return true;
+      }
     }
-
     const sectionList = getRecord(record, 'sectionListRenderer');
-    if (!sectionList || !Array.isArray(sectionList.contents)) return;
-
-    sectionList.contents = sectionList.contents.filter((item) => {
+    if (!sectionList || !Array.isArray(sectionList.contents)) return false;
+    for (const item of sectionList.contents) {
       const shelf = getRecord(item, 'shelfRenderer');
-      return (
-        shelf?.tvhtml5ShelfRendererType !== 'TVHTML5_SHELF_RENDERER_TYPE_SHORTS'
-      );
-    });
+      if (
+        shelf?.tvhtml5ShelfRendererType === 'TVHTML5_SHELF_RENDERER_TYPE_SHORTS'
+      ) {
+        return true;
+      }
+    }
+    return false;
   });
+}
 
+/**
+ * Apply browse filters in one graph traversal.
+ * @param {any} value
+ * @param {{ shorts: boolean, endscreen: boolean }} options
+ */
+export function removeBrowseFeaturesFromResponse(value, options) {
+  walkRecords(value, (record) => {
+    if (options.shorts) {
+      for (const key of ['gridRenderer', 'gridContinuation']) {
+        const container = getRecord(record, key);
+        if (!container || !Array.isArray(container.items)) continue;
+        container.items = container.items.filter((item) => {
+          const tile = getRecord(item, 'tileRenderer');
+          const command = getRecord(tile, 'onSelectCommand');
+          return !getRecord(command, 'reelWatchEndpoint');
+        });
+      }
+      const sectionList = getRecord(record, 'sectionListRenderer');
+      if (sectionList && Array.isArray(sectionList.contents)) {
+        sectionList.contents = sectionList.contents.filter((item) => {
+          const shelf = getRecord(item, 'shelfRenderer');
+          return (
+            shelf?.tvhtml5ShelfRendererType !==
+            'TVHTML5_SHELF_RENDERER_TYPE_SHORTS'
+          );
+        });
+      }
+    }
+    if (options.endscreen) {
+      const endscreen = getRecord(record, 'endscreen');
+      if (endscreen && isRecord(endscreen.endscreenRenderer)) {
+        delete record.endscreen;
+      }
+    }
+  });
   return value;
 }
 
 /** @param {any} value */
-export function removeEndscreenFromResponse(value) {
-  walkRecords(value, (record) => {
-    const endscreen = getRecord(record, 'endscreen');
-    if (endscreen && isRecord(endscreen.endscreenRenderer)) {
-      delete record.endscreen;
-    }
+export function removeShortsFromResponse(value) {
+  return removeBrowseFeaturesFromResponse(value, {
+    shorts: true,
+    endscreen: false
   });
+}
 
-  return value;
+/** @param {any} value */
+export function removeEndscreenFromResponse(value) {
+  return removeBrowseFeaturesFromResponse(value, {
+    shorts: false,
+    endscreen: true
+  });
 }
 
 /** @param {any} value */
@@ -275,3 +324,4 @@ export function withInlinePlaybackNoAd(value) {
     }
   };
 }
+import { MAX_JSON_TRANSFORM_NODES } from './transform-limits.js';

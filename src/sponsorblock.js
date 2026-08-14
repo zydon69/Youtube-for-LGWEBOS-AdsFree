@@ -1,16 +1,13 @@
-import sha256 from 'tiny-sha256';
 import { configAddChangeListener, configRead } from './config.js';
 import {
   isValidSponsorBlockVideoID,
-  normalizeSponsorSegments,
-  parseSponsorBlockResponse
+  normalizeSponsorSegments
 } from './core/sponsorblock-schema.js';
-import { fetchSponsorBlockJSON } from './core/sponsorblock-client.js';
 import {
   SPONSORBLOCK_CATEGORY_BY_NAME,
   SPONSORBLOCK_CATEGORY_OPTIONS
 } from './core/sponsorblock-categories.js';
-import { showNotification } from './ui.js';
+import { showNotification } from './core/notifications.js';
 import { resolveActiveVideo } from './core/active-media-resolver.ts';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
 import {
@@ -19,23 +16,28 @@ import {
   findNextSponsorSegment
 } from './core/sponsorblock-scheduling.js';
 import { getPlayerManager } from './player_api/manager.ts';
+import {
+  clearSponsorBlockSegmentCache,
+  loadSponsorSegments
+} from './core/sponsorblock-repository.js';
 
-const SPONSORBLOCK_API = 'https://sponsor.ajay.app/api';
 const VIDEO_SYNC_DELAY_MS = 100;
 const NAVIGATION_DEBOUNCE_MS = 75;
-const CACHE_TTL_MS = 5 * 60 * 1_000;
-const MAX_CACHE_ENTRIES = 16;
 const MAX_SCHEDULED_DELAY_MS = 2_147_000_000;
+const SEEK_CONFIRMATION_TIMEOUT_MS = 750;
+const SEEK_RETRY_BASE_DELAY_MS = 500;
+const MAX_SEEK_ATTEMPTS_PER_SEGMENT = 3;
+const SEEK_EPSILON_SECONDS = 0.25;
 const RETRY_BASE_DELAY_MS = 5_000;
 const RETRY_MAX_DELAY_MS = 60_000;
+const MAX_INITIALIZATION_RETRIES = 4;
 
 /** @typedef {{ category: string, segment: [number, number] }} SponsorSegment */
-/** @type {Map<string, { expiresAt: number, segments: SponsorSegment[] }>} */
-const segmentCache = new Map();
 /** @type {Array<() => void>} */
 const configDisposers = [];
 
 let disposed = false;
+let installed = false;
 /** @type {SponsorBlockHandler | null} */
 let activeHandler = null;
 /** @type {number | null} */
@@ -49,72 +51,6 @@ let queuedVideoID = null;
 /** @param {number} milliseconds */
 function jitter(milliseconds) {
   return Math.max(0, Math.round(milliseconds * (0.75 + Math.random() * 0.5)));
-}
-
-/** @param {SponsorSegment[]} segments */
-function cloneSegments(segments) {
-  return segments.map(({ category, segment }) => ({
-    category,
-    segment: /** @type {[number, number]} */ ([segment[0], segment[1]])
-  }));
-}
-
-/** @param {string} videoID @param {string[]} categories */
-function createCacheKey(videoID, categories) {
-  return `${videoID}\u0000${categories.join(',')}`;
-}
-
-/** @param {string} key */
-function readSegmentCache(key) {
-  const cached = segmentCache.get(key);
-  if (!cached) return null;
-  if (cached.expiresAt <= Date.now()) {
-    segmentCache.delete(key);
-    return null;
-  }
-  // Refresh insertion order for a small deterministic LRU.
-  segmentCache.delete(key);
-  segmentCache.set(key, cached);
-  return cloneSegments(cached.segments);
-}
-
-/** @param {string} key @param {SponsorSegment[]} segments */
-function writeSegmentCache(key, segments) {
-  segmentCache.delete(key);
-  segmentCache.set(key, {
-    expiresAt: Date.now() + CACHE_TTL_MS,
-    segments: cloneSegments(segments)
-  });
-  while (segmentCache.size > MAX_CACHE_ENTRIES) {
-    const oldest = segmentCache.keys().next().value;
-    if (typeof oldest !== 'string') break;
-    segmentCache.delete(oldest);
-  }
-}
-
-/**
- * Fetch and correlate the hashed-prefix response before it reaches playback.
- * @param {string} videoID
- * @param {string[]} categories
- * @param {AbortSignal | undefined} signal
- */
-async function loadSponsorSegments(videoID, categories, signal) {
-  const cacheKey = createCacheKey(videoID, categories);
-  const cached = readSegmentCache(cacheKey);
-  if (cached) return cached;
-
-  const videoHash = sha256(videoID).substring(0, 4);
-  const url = `${SPONSORBLOCK_API}/skipSegments/${videoHash}?categories=${encodeURIComponent(
-    JSON.stringify(categories)
-  )}`;
-  const response = await fetchSponsorBlockJSON(
-    url,
-    fetch,
-    signal ? { signal } : {}
-  );
-  const segments = parseSponsorBlockResponse(response, videoID);
-  writeSegmentCache(cacheKey, segments);
-  return cloneSegments(segments);
 }
 
 /** @param {import('./player_api/manager.ts').PlayerManager | null} manager */
@@ -135,8 +71,7 @@ function queryProgressBars(root) {
 
 /** @param {ParentNode | null | undefined} playerRoot */
 function findProgressSlider(playerRoot) {
-  let progressBars = queryProgressBars(playerRoot);
-  if (progressBars.length === 0) progressBars = queryProgressBars(document);
+  const progressBars = queryProgressBars(playerRoot ?? document);
   let fallback = null;
   let selected = null;
   let selectedArea = -1;
@@ -171,6 +106,12 @@ export class SponsorBlockHandler {
   scheduledDueAt = null;
   /** @type {string | null} */
   scheduledSegmentKey = null;
+  /** @type {{ key: string, segment: SponsorSegment, target: number, timeoutToken: number } | null} */
+  pendingSeek = null;
+  /** @type {Map<string, number>} */
+  seekAttempts = new Map();
+  /** @type {Set<string>} */
+  blockedSegments = new Set();
   /** @type {number | null} */
   syncTimeout = null;
   /** @type {HTMLElement | null} */
@@ -202,8 +143,8 @@ export class SponsorBlockHandler {
   constructor(videoID, categories) {
     this.videoID = videoID;
     this.categories = [...categories];
-    this.scheduleSkipHandler = () => this.scheduleSkip(false);
-    this.forceScheduleSkipHandler = () => this.scheduleSkip(true);
+    this.scheduleSkipHandler = () => this.handlePlaybackProgress(false);
+    this.forceScheduleSkipHandler = () => this.handlePlaybackProgress(true);
     this.durationChangeHandler = () => {
       this.normalizeSegments();
       this.renderOverlay();
@@ -378,7 +319,8 @@ export class SponsorBlockHandler {
     try {
       playerRoot = this.playerManager?.player ?? null;
     } catch {
-      // Global progress lookup below remains a safe fallback.
+      // A player without a usable root must not attach an overlay to an
+      // unrelated preview's global progress bar.
     }
     const target = findProgressSlider(playerRoot);
     if (!target) {
@@ -430,6 +372,106 @@ export class SponsorBlockHandler {
     this.scheduledSegmentKey = null;
   }
 
+  clearPendingSeek() {
+    if (this.pendingSeek) {
+      window.clearTimeout(this.pendingSeek.timeoutToken);
+    }
+    this.pendingSeek = null;
+  }
+
+  /** @param {SponsorSegment} segment */
+  segmentKey(segment) {
+    return `${segment.category}:${segment.segment[0]}:${segment.segment[1]}`;
+  }
+
+  /** @param {number} currentTime */
+  pruneBlockedSegments(currentTime) {
+    for (const key of this.blockedSegments) {
+      const segment = this.segments.find(
+        (candidate) => this.segmentKey(candidate) === key
+      );
+      if (
+        !segment ||
+        currentTime < segment.segment[0] - SEEK_EPSILON_SECONDS ||
+        currentTime >= segment.segment[1] - SEEK_EPSILON_SECONDS
+      ) {
+        this.blockedSegments.delete(key);
+        this.seekAttempts.delete(key);
+      }
+    }
+  }
+
+  /** @param {SponsorSegment} segment */
+  notifySkipped(segment) {
+    const label =
+      SPONSORBLOCK_CATEGORY_BY_NAME[segment.category]?.name ?? segment.category;
+    showNotification(`Skipping ${label}`, 2000, 'indigo');
+  }
+
+  settlePendingSeek() {
+    const pending = this.pendingSeek;
+    const video = this.video;
+    if (!pending || !video) return false;
+    const currentTime = video.currentTime;
+    if (
+      Number.isFinite(currentTime) &&
+      currentTime >= pending.target - SEEK_EPSILON_SECONDS
+    ) {
+      this.clearPendingSeek();
+      this.seekAttempts.delete(pending.key);
+      this.blockedSegments.delete(pending.key);
+      this.notifySkipped(pending.segment);
+      this.scheduleSkip(true);
+    }
+    return true;
+  }
+
+  /** @param {boolean} force */
+  handlePlaybackProgress(force) {
+    if (this.settlePendingSeek()) return;
+    this.scheduleSkip(force);
+  }
+
+  /** @param {SponsorSegment} segment @param {unknown} [error] */
+  recordSeekFailure(segment, error) {
+    this.clearPendingSeek();
+    const key = this.segmentKey(segment);
+    const attempts = (this.seekAttempts.get(key) ?? 0) + 1;
+    this.seekAttempts.set(key, attempts);
+    if (error) {
+      console.warn('[sponsorblock] Unable to seek over segment', error);
+    }
+    if (attempts >= MAX_SEEK_ATTEMPTS_PER_SEGMENT) {
+      this.blockedSegments.add(key);
+      this.scheduleSkip(true);
+      return;
+    }
+    this.clearScheduledSkip();
+    this.scheduledSegmentKey = key;
+    const delay = SEEK_RETRY_BASE_DELAY_MS * 2 ** (attempts - 1);
+    this.scheduledDueAt = Date.now() + delay;
+    this.nextSkipTimeout = window.setTimeout(() => {
+      this.nextSkipTimeout = null;
+      this.scheduledDueAt = null;
+      this.scheduledSegmentKey = null;
+      this.executeScheduledSkip(segment);
+    }, delay);
+  }
+
+  /** @param {SponsorSegment} segment @param {number} target */
+  awaitSeekConfirmation(segment, target) {
+    this.clearScheduledSkip();
+    const key = this.segmentKey(segment);
+    const timeoutToken = window.setTimeout(() => {
+      if (this.pendingSeek?.key !== key) return;
+      this.recordSeekFailure(
+        segment,
+        new Error('SponsorBlock seek made no observable progress')
+      );
+    }, SEEK_CONFIRMATION_TIMEOUT_MS);
+    this.pendingSeek = { key, segment, target, timeoutToken };
+  }
+
   /** @param {boolean} force */
   scheduleSkip(force = false) {
     const video = this.video;
@@ -443,9 +485,14 @@ export class SponsorBlockHandler {
       return;
     }
 
+    if (this.pendingSeek) return;
+    this.pruneBlockedSegments(video.currentTime);
+
     const allowed = new Set(this.categories);
     const segment = findNextSponsorSegment(
-      this.segments,
+      this.segments.filter(
+        (candidate) => !this.blockedSegments.has(this.segmentKey(candidate))
+      ),
       allowed,
       video.currentTime
     );
@@ -463,7 +510,7 @@ export class SponsorBlockHandler {
       return;
     }
 
-    const segmentKey = `${segment.category}:${segment.segment[0]}:${segment.segment[1]}`;
+    const segmentKey = this.segmentKey(segment);
     const dueAt = Date.now() + delay;
     if (
       !force &&
@@ -489,6 +536,7 @@ export class SponsorBlockHandler {
     this.nextSkipTimeout = null;
     this.scheduledDueAt = null;
     this.scheduledSegmentKey = null;
+    if (this.pendingSeek) return;
     const video = this.video;
     if (!this.active || !video || video.paused) return;
     const managerVideoID = readManagerVideoID(this.playerManager);
@@ -515,14 +563,16 @@ export class SponsorBlockHandler {
     try {
       video.currentTime = decision.target;
     } catch (error) {
-      console.warn('[sponsorblock] Unable to seek over segment', error);
+      this.recordSeekFailure(segment, error);
+      return;
+    }
+    if (video.currentTime >= decision.target - SEEK_EPSILON_SECONDS) {
+      this.seekAttempts.delete(this.segmentKey(segment));
+      this.notifySkipped(segment);
       this.scheduleSkip(true);
       return;
     }
-    const label =
-      SPONSORBLOCK_CATEGORY_BY_NAME[segment.category]?.name ?? segment.category;
-    showNotification(`Skipping ${label}`, 2000, 'indigo');
-    this.scheduleSkip(true);
+    this.awaitSeekConfirmation(segment, decision.target);
   }
 
   removeOverlay() {
@@ -539,6 +589,9 @@ export class SponsorBlockHandler {
 
   detachVideo() {
     this.clearScheduledSkip();
+    this.clearPendingSeek();
+    this.seekAttempts.clear();
+    this.blockedSegments.clear();
     if (this.video) {
       this.video.removeEventListener('play', this.forceScheduleSkipHandler);
       this.video.removeEventListener('pause', this.forceScheduleSkipHandler);
@@ -608,6 +661,12 @@ function scheduleInitializationRetry(videoID, error) {
     error instanceof Error &&
     /** @type {Error & { retryable?: boolean }} */ (error).retryable === false
   ) {
+    return;
+  }
+  if (retryAttempt >= MAX_INITIALIZATION_RETRIES) {
+    console.warn(
+      '[sponsorblock] Retry budget exhausted; waiting for navigation or configuration change'
+    );
     return;
   }
   clearRetry();
@@ -700,31 +759,33 @@ function handleNavigation() {
   queueSponsorBlockSynchronization();
 }
 
-function installSponsorBlock() {
-  window.addEventListener('hashchange', handleNavigation, false);
-  window.addEventListener('popstate', handleNavigation, false);
-  window.addEventListener('online', handleNavigation, false);
-  configDisposers.push(
-    configAddChangeListener('enableSponsorBlock', handleNavigation)
-  );
-  for (const option of SPONSORBLOCK_CATEGORY_OPTIONS) {
+export function installSponsorBlock() {
+  if (installed) return;
+  disposed = false;
+  installed = true;
+  try {
+    window.addEventListener('hashchange', handleNavigation, false);
+    window.addEventListener('popstate', handleNavigation, false);
+    window.addEventListener('online', handleNavigation, false);
     configDisposers.push(
-      configAddChangeListener(option.configKey, handleNavigation)
+      configAddChangeListener('enableSponsorBlock', handleNavigation)
     );
+    for (const option of SPONSORBLOCK_CATEGORY_OPTIONS) {
+      configDisposers.push(
+        configAddChangeListener(option.configKey, handleNavigation)
+      );
+    }
+    queueSponsorBlockSynchronization();
+  } catch (error) {
+    dispose();
+    throw error;
   }
-  queueSponsorBlockSynchronization();
-}
-
-try {
-  installSponsorBlock();
-} catch (error) {
-  dispose();
-  throw error;
 }
 
 export function dispose() {
-  if (disposed) return;
+  if (disposed && !installed) return;
   disposed = true;
+  installed = false;
   if (navigationDebounceToken !== null) {
     window.clearTimeout(navigationDebounceToken);
     navigationDebounceToken = null;
@@ -733,7 +794,7 @@ export function dispose() {
   retryAttempt = 0;
   queuedVideoID = null;
   uninitializeSponsorBlock();
-  segmentCache.clear();
+  clearSponsorBlockSegmentCache();
   for (const removeListener of configDisposers.splice(0)) removeListener();
   window.removeEventListener('hashchange', handleNavigation, false);
   window.removeEventListener('popstate', handleNavigation, false);

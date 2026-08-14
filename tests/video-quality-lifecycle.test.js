@@ -61,9 +61,11 @@ test('video-quality wrapper installs, reacts to playback and disposes cleanly', 
       import('../src/ui.js')
     ]);
     await videoQuality.installVideoQuality();
-    assert.equal(typeof stateListener, 'function');
+    assert.equal(stateListener, null);
 
     config.configWrite('forceHighResVideo', true);
+    await waitForTimers(30);
+    assert.equal(typeof stateListener, 'function');
     state.isPlaying = true;
     state.isPaused = false;
     stateListener();

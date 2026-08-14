@@ -4,7 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.5.7] - 2026/08/11
+Fork versions below are development milestones until a signed GitHub release
+and its complete artifact set are published.
+
+## Unreleased
+
+### Security
+
+- Fail closed on SponsorBlock transports that cannot enforce redirect and
+  referrer policy; bound seek and initialization retry loops.
+- Prevent recursive host-hook rebinding and require exact thumbnail origins.
+- Update vulnerable build dependencies and harden signed-release preflights.
+
+### Changed
+
+- Replace side-effect feature imports with explicit transactional installers.
+- Unify JSON response filters, runtime origins, media selection and
+  notifications behind cohesive services.
+
+## 0.5.7 (unreleased milestone) - 2026-08-11
 
 ### Security
 
@@ -31,7 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Pin development to Node.js 24 LTS and add real-browser Playwright coverage.
 - Enrich the CycloneDX SBOM with licenses, dependency edges and vendored hashes.
 
-## [0.5.6] - 2026/08/11
+## 0.5.6 (unreleased milestone) - 2026-08-11
 
 ### Security
 
@@ -49,7 +67,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Remove the duplicate legacy manifest generator.
 
-## [0.5.5] - 2026/08/11
+## 0.5.5 (unreleased milestone) - 2026-08-11
 
 ### Security
 
@@ -70,7 +88,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Add production-bundle smoke tests and expanded security regression tests.
 - Rename Audio-Only mode to Screen-hidden mode to reflect its actual behavior.
 
-## [0.5.4] - 2026/08/08
+## 0.5.4 (unreleased milestone) - 2026-08-08
 
 ### Security
 
@@ -349,7 +367,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Created basic web app which launches YouTube TV.
 
-[Unreleased]: https://github.com/webosbrew/youtube-webos/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree/commits/main
 [0.3.1]: https://github.com/webosbrew/youtube-webos/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/webosbrew/youtube-webos/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/webosbrew/youtube-webos/compare/v0.2.0...v0.2.1

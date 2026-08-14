@@ -1,4 +1,6 @@
-export const TRUSTED_YOUTUBE_ORIGIN = 'https://www.youtube.com';
+import { YOUTUBE_ORIGIN } from './runtime-origins.js';
+
+export const TRUSTED_YOUTUBE_ORIGIN = YOUTUBE_ORIGIN;
 
 export interface RuntimeContext {
   readonly self: unknown;

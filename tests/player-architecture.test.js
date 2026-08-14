@@ -81,6 +81,21 @@ test('player capability guard skips matching DOM placeholders', async () => {
   await window.close();
 });
 
+test('player manager capability guard does not require quality APIs', async () => {
+  const window = new Window({ url: 'https://www.youtube.com/tv#/' });
+  const player = window.document.createElement('div');
+  player.className = 'html5-video-player';
+  Object.assign(player, {
+    getVideoData: () => ({ video_id: 'video' }),
+    getPlayerStateObject: () => ({ isPlaying: false })
+  });
+  window.document.body.appendChild(player);
+
+  assert.equal(isYTPlayer(player), true);
+  assert.equal(findCapablePlayer(window.document), player);
+  await window.close();
+});
+
 test('player capability guard supports legacy selector matching and non-iterable NodeLists', async () => {
   const window = new Window({ url: 'https://www.youtube.com/tv#/' });
   const capable = window.document.createElement('div');

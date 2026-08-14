@@ -1,4 +1,5 @@
 import { cloneTransformValue } from '../core/clone-transform-value.ts';
+import { MAX_JSON_TRANSFORM_BYTES } from '../core/transform-limits.js';
 
 type ParseTransformer = (value: unknown) => unknown;
 type StringifyTransformer = (value: unknown) => unknown;
@@ -19,6 +20,7 @@ export interface JSONHookTarget {
 
 interface JSONHookInstallation {
   readonly target: JSONHookTarget;
+  readonly baseParse: typeof JSON.parse;
   nativeParse: typeof JSON.parse;
   nativeStringify: typeof JSON.stringify;
   hookedParse: typeof JSON.parse;
@@ -31,6 +33,8 @@ const stringifyTransformers = new Map<
   TransformerRegistration<string>
 >();
 let installation: JSONHookInstallation | null = null;
+let parseHookDepth = 0;
+let stringifyHookDepth = 0;
 
 function validateRegistration<TApplicabilityInput>(
   name: string,
@@ -150,14 +154,26 @@ function applyTransformers(
 }
 
 function parseWithHooks(
-  state: JSONHookInstallation,
+  target: JSONHookTarget,
+  delegate: typeof JSON.parse,
   text: string,
   reviver?: JSONReviver
 ) {
-  const value: unknown = Reflect.apply(state.nativeParse, state.target, [
-    text,
-    reviver
-  ]);
+  parseHookDepth++;
+  let value: unknown;
+  try {
+    value = Reflect.apply(delegate, target, [text, reviver]);
+  } finally {
+    parseHookDepth--;
+  }
+
+  // A host wrapper can retain an older YTAF wrapper. Only the newest wrapper
+  // owns transformation; retained wrappers act as transparent delegates.
+  if (parseHookDepth > 0) return value;
+  if (typeof text === 'string' && text.length > MAX_JSON_TRANSFORM_BYTES) {
+    console.warn('[json] Parsed payload exceeds transform byte limit');
+    return value;
+  }
 
   // Native JSON.parse ignores null and every other non-callable reviver.
   if (typeof reviver === 'function') return value;
@@ -176,19 +192,28 @@ function hasActiveReplacer(replacer: unknown) {
 }
 
 function stringifyWithHooks(
-  state: JSONHookInstallation,
+  target: JSONHookTarget,
+  delegate: typeof JSON.stringify,
+  parseDelegate: typeof JSON.parse,
   value: unknown,
   replacer?: JSONReplacer,
   space?: string | number
 ) {
   // This first native call is the single evaluation of getters and toJSON.
-  const serialized = Reflect.apply(state.nativeStringify, state.target, [
-    value,
-    replacer,
-    space
-  ]);
+  stringifyHookDepth++;
+  let serialized: string | undefined;
+  try {
+    serialized = Reflect.apply(delegate, target, [value, replacer, space]);
+  } finally {
+    stringifyHookDepth--;
+  }
+  if (stringifyHookDepth > 0) return serialized;
   if (serialized === undefined || hasActiveReplacer(replacer))
     return serialized;
+  if (serialized.length > MAX_JSON_TRANSFORM_BYTES) {
+    console.warn('[json] Serialized payload exceeds transform byte limit');
+    return serialized;
+  }
 
   // Applicability runs against the already-produced native JSON text, so an
   // irrelevant request pays neither an extra parse nor a full-graph clone.
@@ -199,19 +224,39 @@ function stringifyWithHooks(
   );
   if (registrations.length === 0) return serialized;
 
-  const serializableValue = Reflect.apply(state.nativeParse, state.target, [
-    serialized
-  ]);
+  const serializableValue = Reflect.apply(parseDelegate, target, [serialized]);
   const transformed = applyTransformers(
     serializableValue,
     registrations,
     'stringify'
   );
-  return Reflect.apply(state.nativeStringify, state.target, [
-    transformed,
-    undefined,
-    space
-  ]);
+  stringifyHookDepth++;
+  try {
+    return Reflect.apply(delegate, target, [transformed, undefined, space]);
+  } finally {
+    stringifyHookDepth--;
+  }
+}
+
+function createParseHook(target: JSONHookTarget, delegate: typeof JSON.parse) {
+  return ((text: string, reviver?: JSONReviver) =>
+    parseWithHooks(target, delegate, text, reviver)) as typeof JSON.parse;
+}
+
+function createStringifyHook(
+  target: JSONHookTarget,
+  delegate: typeof JSON.stringify,
+  parseDelegate: typeof JSON.parse
+) {
+  return ((value: unknown, replacer?: JSONReplacer, space?: string | number) =>
+    stringifyWithHooks(
+      target,
+      delegate,
+      parseDelegate,
+      value,
+      replacer,
+      space
+    )) as typeof JSON.stringify;
 }
 
 function detachJSONHooks(state: JSONHookInstallation) {
@@ -245,20 +290,26 @@ function bindJSONHooks(state: JSONHookInstallation) {
     throw new TypeError('JSON.stringify replacement must be callable');
   }
 
+  const nextParse = rebindParse
+    ? createParseHook(state.target, currentParse)
+    : state.hookedParse;
+  const nextStringify = rebindStringify
+    ? createStringifyHook(state.target, currentStringify, state.baseParse)
+    : state.hookedStringify;
   let parseAttempted = false;
   let stringifyAttempted = false;
   try {
     if (rebindParse) {
       parseAttempted = true;
-      state.target.parse = state.hookedParse;
-      if (state.target.parse !== state.hookedParse) {
+      state.target.parse = nextParse;
+      if (state.target.parse !== nextParse) {
         throw new TypeError('Unable to bind JSON.parse hook');
       }
     }
     if (rebindStringify) {
       stringifyAttempted = true;
-      state.target.stringify = state.hookedStringify;
-      if (state.target.stringify !== state.hookedStringify) {
+      state.target.stringify = nextStringify;
+      if (state.target.stringify !== nextStringify) {
         throw new TypeError('Unable to bind JSON.stringify hook');
       }
     }
@@ -283,8 +334,14 @@ function bindJSONHooks(state: JSONHookInstallation) {
     throw error;
   }
 
-  if (rebindParse) state.nativeParse = currentParse;
-  if (rebindStringify) state.nativeStringify = currentStringify;
+  if (rebindParse) {
+    state.nativeParse = currentParse;
+    state.hookedParse = nextParse;
+  }
+  if (rebindStringify) {
+    state.nativeStringify = currentStringify;
+    state.hookedStringify = nextStringify;
+  }
 }
 
 /** Install or rebind hooks after the host replaces JSON methods or the realm. */
@@ -302,24 +359,12 @@ export function synchronizeJSONHooks(target: JSONHookTarget = globalThis.JSON) {
     }
     const state = {
       target,
+      baseParse: target.parse,
       nativeParse: target.parse,
       nativeStringify: target.stringify,
       hookedParse: undefined as unknown as typeof JSON.parse,
       hookedStringify: undefined as unknown as typeof JSON.stringify
     } satisfies JSONHookInstallation;
-    state.hookedParse = ((text: string, reviver?: JSONReviver) =>
-      parseWithHooks(state, text, reviver)) as typeof JSON.parse;
-    state.hookedStringify = ((
-      value: unknown,
-      replacer?: JSONReplacer,
-      space?: string | number
-    ) =>
-      stringifyWithHooks(
-        state,
-        value,
-        replacer,
-        space
-      )) as typeof JSON.stringify;
     bindJSONHooks(state);
     installation = state;
   }
@@ -337,5 +382,3 @@ export function restoreJSONHooks() {
   parseTransformers.clear();
   stringifyTransformers.clear();
 }
-
-installJSONHooks();

@@ -19,6 +19,7 @@ test('screensaver sizing follows watch state and restores the latest host styles
   let module;
   try {
     module = await import('../src/screensaver-fix.ts');
+    module.installScreensaverFix();
     assert.equal(firstVideo.style.width, '1280px');
     assert.equal(firstVideo.style.height, '720px');
     assert.equal(firstVideo.style.left, '0px');

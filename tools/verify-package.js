@@ -404,11 +404,12 @@ async function validateArchivePayload(dataFiles, controlFiles, distDirectory) {
   }
 }
 
-/** @param {{ mode?: 'release' | 'development' }} [options] */
+/** @param {{ mode?: 'release' | 'development', artifactDirectory?: string }} [options] */
 export async function verifyPackage(options = {}) {
   assertPackageMetadata(pkgJson);
   assertAppInfo(appInfoSource, pkgJson.version);
   const mode = options.mode ?? 'release';
+  const artifactDirectory = resolve(options.artifactDirectory ?? PROJECT_ROOT);
   const names = artifactNames(pkgJson.version);
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'ytaf-verify-'));
   try {
@@ -447,7 +448,7 @@ export async function verifyPackage(options = {}) {
     });
 
     const sbomBytes = await assertFilesEqual(
-      join(PROJECT_ROOT, names.sbom),
+      join(artifactDirectory, names.sbom),
       expectedSbomPath,
       PACKAGE_LIMITS.dataArchiveBytes
     );
@@ -465,7 +466,7 @@ export async function verifyPackage(options = {}) {
       // Rebuilding every artifact authenticates it against the current source.
       // eslint-disable-next-line no-await-in-loop
       const bytes = await assertFilesEqual(
-        join(PROJECT_ROOT, name),
+        join(artifactDirectory, name),
         join(expectedArtifactsDirectory, name),
         maximumBytes
       );
@@ -501,16 +502,26 @@ export async function verifyPackage(options = {}) {
       throw new Error('Release evidence is incomplete');
     }
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    const qaEvidence = manifest.releaseEvidence?.qa;
     if (
       manifest.ipkHash?.sha256 !== sha256(archive) ||
       manifest.releaseEvidence?.sbom?.sha256 !== sha256(sbomBytes) ||
       manifest.releaseEvidence?.mode !== mode ||
       manifest.releaseEvidence?.distTreeSha256 !==
-        (await hashDirectory(freshDist, EXPECTED_APP_FILES))
+        (await hashDirectory(freshDist, EXPECTED_APP_FILES)) ||
+      qaEvidence?.sourceTreeSha256 !==
+        manifest.releaseEvidence?.sourceTreeSha256 ||
+      qaEvidence?.distTreeSha256 !== manifest.releaseEvidence?.distTreeSha256
     ) {
       throw new Error('Manifest hashes or build provenance are invalid');
     }
     const provenance = JSON.parse(provenanceBytes.toString('utf8'));
+    if (
+      JSON.stringify(provenance.predicate?.runDetails?.metadata?.qa) !==
+      JSON.stringify(qaEvidence)
+    ) {
+      throw new Error('Provenance does not bind the QA receipt');
+    }
     const provenanceSubjects =
       /** @type {Array<{ name?: unknown, digest?: { sha256?: unknown } }>} */ (
         Array.isArray(provenance.subject) ? provenance.subject : []

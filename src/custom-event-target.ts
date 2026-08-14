@@ -49,11 +49,6 @@ class LegacyCustomEvent<
 
 export const TypedCustomEvent = LegacyCustomEvent;
 
-export type TypedEvent<T, U> = {
-  readonly currentTarget: T | null;
-  readonly type: U;
-};
-
 export class CustomEventTarget<
   T extends EmptyEventMap & { [K in keyof T]: EventLike }
 > {

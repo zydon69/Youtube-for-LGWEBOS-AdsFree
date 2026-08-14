@@ -2,7 +2,7 @@
 const config = {
   trailingComma: 'none',
   singleQuote: true,
-  endOfLine: 'auto',
+  endOfLine: 'lf',
   overrides: [
     {
       files: ['tsconfig.json', 'jsconfig.json', 'tsconfig.*.json'],

@@ -1,6 +1,7 @@
 import { configRead, configAddChangeListener } from './config.js';
 import './watch.css';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
+import { resolveActiveVideo } from './core/active-media-resolver.ts';
 
 function createClockFormatter() {
   try {
@@ -115,6 +116,14 @@ class Watch {
   }
 
   #findCurrentPlayer() {
+    const activeVideo = resolveActiveVideo();
+    let ancestor = activeVideo?.parentElement ?? null;
+    while (ancestor) {
+      if (ancestor.tagName.toLowerCase() === 'ytlr-watch-default') {
+        return ancestor;
+      }
+      ancestor = ancestor.parentElement;
+    }
     const candidates = document.querySelectorAll('ytlr-watch-default');
     for (let index = candidates.length - 1; index >= 0; index--) {
       const candidate = candidates[index];
@@ -192,24 +201,31 @@ function initializeWatch() {
 
 /** @type {() => void} */
 let removeWatchConfigListener = () => {};
+let installed = false;
 
-try {
-  removeWatchConfigListener = configAddChangeListener(
-    'showWatch',
-    handleWatchConfigChange
-  );
-  if (document.body) initializeWatch();
-  else {
-    document.addEventListener('DOMContentLoaded', initializeWatch, {
-      once: true
-    });
+export function installWatch() {
+  if (installed) return;
+  try {
+    removeWatchConfigListener = configAddChangeListener(
+      'showWatch',
+      handleWatchConfigChange
+    );
+    installed = true;
+    if (document.body) initializeWatch();
+    else {
+      document.addEventListener('DOMContentLoaded', initializeWatch, {
+        once: true
+      });
+    }
+  } catch (error) {
+    dispose();
+    throw error;
   }
-} catch (error) {
-  dispose();
-  throw error;
 }
 
 export function dispose() {
+  if (!installed) return;
+  installed = false;
   toggleWatch(false);
   removeWatchConfigListener();
   document.removeEventListener('DOMContentLoaded', initializeWatch);
