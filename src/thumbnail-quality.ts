@@ -1,5 +1,6 @@
 import { configRead, configAddChangeListener } from './config.js';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
+import { YOUTUBE_THUMBNAIL_ORIGIN } from './core/runtime-origins.js';
 
 const WEBP_LOSSY_TEST_IMAGE =
   'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA';
@@ -8,6 +9,8 @@ const MAX_CONCURRENT_THUMBNAIL_LOADS = 4;
 const MAX_PENDING_THUMBNAIL_LOADS = 256;
 const THUMBNAIL_LOAD_TIMEOUT_MS = 8_000;
 const YT_THUMBNAIL_ELEMENT_TAG = 'YTLR-THUMBNAIL-DETAILS';
+const CANCELLED_IMAGE_SOURCE =
+  'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 interface UpgradeRequest {
   readonly generation: number;
@@ -18,6 +21,7 @@ interface UpgradeRequest {
 interface ActiveUpgrade {
   readonly image: HTMLImageElement;
   readonly request: UpgradeRequest;
+  cancelled: boolean;
   timeoutToken: number | null;
 }
 
@@ -96,7 +100,11 @@ function beginWebpDetection() {
  * @param {boolean} supportsWebp
  */
 export function rewriteThumbnailURL(input: URL, supportsWebp: boolean) {
-  if (input.protocol !== 'https:' || input.hostname !== 'i.ytimg.com') {
+  if (
+    input.origin !== YOUTUBE_THUMBNAIL_ORIGIN ||
+    input.username !== '' ||
+    input.password !== ''
+  ) {
     return null;
   }
 
@@ -135,18 +143,34 @@ function parseCSSUrl(value: string): URL | null {
   }
 }
 
-function cancelUpgrade(element: HTMLElement) {
-  pendingUpgrades.delete(element);
-  const active = activeUpgrades.get(element);
-  if (!active) return;
+function abortImageLoad(image: HTMLImageElement) {
+  try {
+    image.onload = null;
+    image.onerror = null;
+    image.removeAttribute?.('src');
+    image.src = CANCELLED_IMAGE_SOURCE;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearActiveUpgrade(active: ActiveUpgrade) {
   active.image.onload = null;
   active.image.onerror = null;
   if (active.timeoutToken !== null) {
     window.clearTimeout(active.timeoutToken);
     active.timeoutToken = null;
   }
-  activeUpgrades.delete(element);
-  activeLoadCount = Math.max(0, activeLoadCount - 1);
+}
+
+function cancelUpgrade(element: HTMLElement) {
+  pendingUpgrades.delete(element);
+  const active = activeUpgrades.get(element);
+  if (!active || active.cancelled) return;
+  active.cancelled = true;
+  if (!abortImageLoad(active.image)) return;
+  finishUpgrade(element, active, false);
 }
 
 function restoreBackground(element: HTMLElement) {
@@ -202,15 +226,10 @@ function finishUpgrade(
   succeeded: boolean
 ) {
   if (activeUpgrades.get(element) !== active) return;
-  active.image.onload = null;
-  active.image.onerror = null;
-  if (active.timeoutToken !== null) {
-    window.clearTimeout(active.timeoutToken);
-    active.timeoutToken = null;
-  }
+  clearActiveUpgrade(active);
   activeUpgrades.delete(element);
   activeLoadCount = Math.max(0, activeLoadCount - 1);
-  if (succeeded) {
+  if (succeeded && !active.cancelled) {
     applyCompletedUpgrade(element, active.request, active.image);
   }
   pumpUpgradeQueue();
@@ -222,8 +241,9 @@ function pumpUpgradeQueue() {
     activeLoadCount < MAX_CONCURRENT_THUMBNAIL_LOADS &&
     pendingUpgrades.size > 0
   ) {
-    const first = pendingUpgrades.entries().next().value as
-      [HTMLElement, UpgradeRequest] | undefined;
+    const first = [...pendingUpgrades.entries()].find(
+      ([element]) => !activeUpgrades.has(element)
+    ) as [HTMLElement, UpgradeRequest] | undefined;
     if (!first) return;
     const [element, request] = first;
     pendingUpgrades.delete(element);
@@ -238,15 +258,21 @@ function pumpUpgradeQueue() {
       pendingUpgrades.clear();
       return;
     }
-    const active: ActiveUpgrade = { image, request, timeoutToken: null };
+    const active: ActiveUpgrade = {
+      image,
+      request,
+      cancelled: false,
+      timeoutToken: null
+    };
     activeUpgrades.set(element, active);
     activeLoadCount++;
     image.onload = () => finishUpgrade(element, active, true);
     image.onerror = () => finishUpgrade(element, active, false);
-    active.timeoutToken = window.setTimeout(
-      () => finishUpgrade(element, active, false),
-      THUMBNAIL_LOAD_TIMEOUT_MS
-    );
+    active.timeoutToken = window.setTimeout(() => {
+      active.cancelled = true;
+      abortImageLoad(active.image);
+      finishUpgrade(element, active, false);
+    }, THUMBNAIL_LOAD_TIMEOUT_MS);
     try {
       image.src = request.targetHref;
     } catch {
@@ -385,8 +411,6 @@ function disableObserver() {
   for (const element of pendingUpgrades.keys()) cancelUpgrade(element);
   for (const element of activeUpgrades.keys()) cancelUpgrade(element);
   pendingUpgrades.clear();
-  activeUpgrades.clear();
-  activeLoadCount = 0;
   for (const element of upgradedBackgrounds.keys()) restoreBackground(element);
   upgradedBackgrounds.clear();
 }
@@ -403,25 +427,34 @@ function handleThumbnailConfigChange(
 }
 
 let removeThumbnailConfigListener: () => void = () => {};
+let installed = false;
 
-try {
-  beginWebpDetection();
-  removeThumbnailConfigListener = configAddChangeListener(
-    'upgradeThumbnails',
-    handleThumbnailConfigChange
-  );
-  if (document.body) initializeThumbnailObserver();
-  else {
-    document.addEventListener('DOMContentLoaded', initializeThumbnailObserver, {
-      once: true
-    });
+export function installThumbnailQuality() {
+  if (installed) return;
+  try {
+    beginWebpDetection();
+    removeThumbnailConfigListener = configAddChangeListener(
+      'upgradeThumbnails',
+      handleThumbnailConfigChange
+    );
+    installed = true;
+    if (document.body) initializeThumbnailObserver();
+    else {
+      document.addEventListener(
+        'DOMContentLoaded',
+        initializeThumbnailObserver,
+        { once: true }
+      );
+    }
+  } catch (error) {
+    dispose();
+    throw error;
   }
-} catch (error) {
-  dispose();
-  throw error;
 }
 
 export function dispose() {
+  if (!installed && webpDetectionToken === null && !webpProbeImage) return;
+  installed = false;
   disableObserver();
   if (webpDetectionToken !== null) {
     window.clearTimeout(webpDetectionToken);

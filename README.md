@@ -30,7 +30,9 @@
 - [Autostart Support](#autostart)
 - Force Highest Video Quality
 - Screen-hidden mode (🟦 Blue button on remote; playback continues normally)
-- Full Animation Support
+- Full YouTube TV animations (the launcher forces YouTube's full-animation
+  flags; validation status by webOS generation is tracked in the compatibility
+  matrix)
 - Shorts Removal
 - Higher-Quality Thumbnails
 - On-Screen Clock Overlay
@@ -46,6 +48,8 @@
 ## Requirements
 
 - Uninstall the official YouTube app before installing this one.
+- Check the [compatibility matrix](docs/compatibility-matrix.md). A syntax-
+  compatible engine is not presented as physically tested hardware.
 
 ---
 
@@ -63,7 +67,8 @@ CLI.
 
 ## Autostart
 
-To enable autostart, run the following command needs to be executed on the TV via **SSH** or **Telnet**:
+To enable autostart, run the following command on the TV through **SSH**. Keep
+developer access temporary and restricted to a trusted local network:
 
 ```sh
 luna-send-pub -n 1 'luna://com.webos.service.eim/addDevice' '{"appId":"youtube.leanback.v4","pigImage":"","mvpdIcon":""}'
@@ -208,16 +213,15 @@ pnpm run inspect
 
 3. Copy `id_rsa` to `~/.ssh` (Windows: `%USERPROFILE%\.ssh`)
 4. Append `id_rsa.pub` to `/home/root/.ssh/authorized_keys` on the TV
-5. Set up device:
+5. Run the interactive device setup so the SSH key passphrase is never placed
+   in shell history or process arguments:
 
    ```sh
-   ares-setup-device -a webos \
-     -i "username=root" \
-     -i "privatekey=id_rsa" \
-     -i "passphrase=SSH_KEY_PASSPHRASE" \
-     -i "host=TV_IP" \
-     -i "port=22"
+   ares-setup-device
    ```
+
+   Add a device named `webos`, select the TV profile and enter `root`, the TV
+   address, port `22`, `id_rsa` and its passphrase only when prompted.
 
 ---
 

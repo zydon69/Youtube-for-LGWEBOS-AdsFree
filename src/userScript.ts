@@ -1,6 +1,7 @@
 import {
   defineBootstrapModule,
-  IsolatedBootstrap
+  IsolatedBootstrap,
+  type BootstrapReport
 } from './core/isolated-bootstrap';
 import { isTrustedRuntimeContext } from './core/runtime-context';
 import { handleLaunch } from './utils';
@@ -14,6 +15,15 @@ let fetchHooks: FetchHooksModule | null = null;
 const bootstrap = new IsolatedBootstrap();
 const bootstrapController =
   typeof AbortController === 'function' ? new AbortController() : null;
+
+const inactiveBootstrapReport: BootstrapReport = {
+  loaded: [],
+  failures: [],
+  aborted: false
+};
+export let bootstrapReport: Promise<BootstrapReport> = Promise.resolve(
+  inactiveBootstrapReport
+);
 
 const modules = [
   defineBootstrapModule(
@@ -63,33 +73,62 @@ const modules = [
       module.disconnectDOMMutationCoordinator()
   ),
   defineBootstrapModule(
-    'adblock',
-    () => import(/* webpackMode: "eager" */ './adblock.js'),
-    (module: typeof import('./adblock.js')) => module.dispose()
+    'content-filters',
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './content-filters'
+      );
+      module.installContentFilters();
+      return module;
+    },
+    (module: typeof import('./content-filters')) => module.dispose()
   ),
   defineBootstrapModule(
-    'shorts',
-    () => import(/* webpackMode: "eager" */ './shorts.js'),
-    (module: typeof import('./shorts.js')) => module.dispose()
+    'notifications',
+    () => import(/* webpackMode: "eager" */ './core/notifications.js'),
+    (module: typeof import('./core/notifications.js')) =>
+      module.disposeNotifications()
   ),
   defineBootstrapModule(
     'ui',
-    () => import(/* webpackMode: "eager" */ './ui.js'),
+    async () => {
+      const module = await import(/* webpackMode: "eager" */ './ui.js');
+      module.installUI();
+      return module;
+    },
     (module: typeof import('./ui.js')) => module.dispose()
   ),
   defineBootstrapModule(
     'sponsorblock',
-    () => import(/* webpackMode: "eager" */ './sponsorblock.js'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './sponsorblock.js'
+      );
+      module.installSponsorBlock();
+      return module;
+    },
     (module: typeof import('./sponsorblock.js')) => module.dispose()
   ),
   defineBootstrapModule(
     'thumbnail-quality',
-    () => import(/* webpackMode: "eager" */ './thumbnail-quality'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './thumbnail-quality'
+      );
+      module.installThumbnailQuality();
+      return module;
+    },
     (module: typeof import('./thumbnail-quality')) => module.dispose()
   ),
   defineBootstrapModule(
     'screensaver-fix',
-    () => import(/* webpackMode: "eager" */ './screensaver-fix'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './screensaver-fix'
+      );
+      module.installScreensaverFix();
+      return module;
+    },
     (module: typeof import('./screensaver-fix')) => module.dispose()
   ),
   defineBootstrapModule(
@@ -98,32 +137,53 @@ const modules = [
   ),
   defineBootstrapModule(
     'watch',
-    () => import(/* webpackMode: "eager" */ './watch.js'),
+    async () => {
+      const module = await import(/* webpackMode: "eager" */ './watch.js');
+      module.installWatch();
+      return module;
+    },
     (module: typeof import('./watch.js')) => module.dispose()
   ),
   defineBootstrapModule(
     'video-quality',
-    () => import(/* webpackMode: "eager" */ './video-quality'),
+    async () => {
+      const module = await import(/* webpackMode: "eager" */ './video-quality');
+      await module.installVideoQuality();
+      return module;
+    },
     (module: typeof import('./video-quality')) => module.dispose()
   ),
   defineBootstrapModule(
     'language-settings',
-    () => import(/* webpackMode: "eager" */ './lang-settings-fix'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './lang-settings-fix'
+      );
+      module.installLanguageSettingsFix();
+      return module;
+    },
     (module: typeof import('./lang-settings-fix')) => module.dispose()
   ),
   defineBootstrapModule(
-    'remove-endscreen',
-    () => import(/* webpackMode: "eager" */ './remove-endscreen'),
-    (module: typeof import('./remove-endscreen')) => module.dispose()
-  ),
-  defineBootstrapModule(
     'block-webos-cast',
-    () => import(/* webpackMode: "eager" */ './block-webos-cast'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './block-webos-cast'
+      );
+      module.installBlockWebOSCast();
+      return module;
+    },
     (module: typeof import('./block-webos-cast')) => module.dispose()
   ),
   defineBootstrapModule(
     'auto-account-select',
-    () => import(/* webpackMode: "eager" */ './auto-account-select'),
+    async () => {
+      const module = await import(
+        /* webpackMode: "eager" */ './auto-account-select'
+      );
+      await module.installAutoAccountSelectFeature();
+      return module;
+    },
     (module: typeof import('./auto-account-select')) => module.dispose()
   )
 ] as const;
@@ -165,5 +225,16 @@ if (isTrustedRuntimeContext(window)) {
   document.addEventListener('webOSRelaunch', handleRelaunch, true);
   window.addEventListener('pageshow', handlePageShow, false);
   window.addEventListener('pagehide', handlePageHide, false);
-  void bootstrap.run(modules, bootstrapController?.signal);
+  bootstrapReport = bootstrap.run(modules, bootstrapController?.signal);
+  void bootstrapReport.then((report) => {
+    document.dispatchEvent(
+      new CustomEvent('ytafBootstrapComplete', {
+        detail: {
+          loaded: [...report.loaded],
+          failures: report.failures.map(({ name }) => name),
+          aborted: report.aborted
+        }
+      })
+    );
+  });
 }

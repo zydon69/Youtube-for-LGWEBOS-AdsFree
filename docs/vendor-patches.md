@@ -13,6 +13,8 @@ commit `183f0146b6741007e46fa64ab0950447defdf8af`. Local changes are limited to:
   `Event`/`detail` fallback) when `CustomEvent` is unavailable;
 - webOS-specific focus boundary and checkbox behavior;
 - initialization when the user script is injected after `window.load`;
+- reversible installation with named listeners and exact restoration of
+  pre-existing window/Element descriptors;
 - an ESM marker required by the build.
 
 `src/domrect-polyfill.js` is based on Financial Times polyfill-library commit
@@ -22,7 +24,7 @@ marker and a guard that preserves a native `DOMRect` implementation.
 Current vendored SHA-256 values:
 
 - `src/spatial-navigation-polyfill.js`:
-  `926d7332c5d588fb464d8a019fa6fdaf76165b08d71b27291bce605a1a4b81d9`
+  `a45a26fdc3399542acb3ef7497dba7c190cca894cea857c46514e73a9e2bea15`
 - `src/domrect-polyfill.js`:
   `df8d563d2dd594f31142e4f27188c68c755449c01b1693760934061d10cc1606`
 

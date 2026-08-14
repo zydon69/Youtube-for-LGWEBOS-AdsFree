@@ -11,6 +11,7 @@ import {
 
 test('ad applicability detects supported shapes without broad false positives', () => {
   assert.equal(hasRemovableAds({ contents: { unrelated: true } }), false);
+  assert.equal(hasRemovableAds({ adSlots: 'billing' }), false);
   assert.equal(hasRemovableAds({ adPlacements: [] }), true);
   assert.equal(
     hasRemovableAds({

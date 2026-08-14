@@ -1,7 +1,5 @@
 import { SPONSORBLOCK_CATEGORIES } from './sponsorblock-categories.js';
 
-export { SPONSORBLOCK_CATEGORIES } from './sponsorblock-categories.js';
-
 export const MAX_SPONSORBLOCK_RESPONSE_BYTES = 512 * 1024;
 export const MAX_SPONSORBLOCK_SEGMENTS = 256;
 export const MAX_SPONSORBLOCK_CANDIDATES = 512;

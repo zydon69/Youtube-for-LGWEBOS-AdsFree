@@ -11,6 +11,10 @@ class MemoryStorage {
   setItem(key, value) {
     this.values.set(key, String(value));
   }
+
+  removeItem(key) {
+    this.values.delete(key);
+  }
 }
 
 globalThis.window = { localStorage: new MemoryStorage() };
@@ -19,6 +23,7 @@ globalThis.window.localStorage.setItem(
   'ytaf-configuration',
   JSON.stringify({ enableSponsorBlock: true, upgradeThumbnails: true })
 );
+globalThis.window.localStorage.setItem('ytaf-configuration-v2', '{broken');
 
 const {
   configAddChangeListener,
@@ -31,6 +36,10 @@ const {
 test('third-party SponsorBlock requests require explicit opt-in', () => {
   assert.equal(configRead('enableSponsorBlock'), false);
   assert.equal(configRead('upgradeThumbnails'), true);
+  assert.equal(
+    globalThis.window.localStorage.getItem('ytaf-configuration'),
+    null
+  );
 });
 
 test('configuration changes expose the new boolean value', () => {

@@ -138,12 +138,27 @@ function dispatchBlueKey() {
   window.document.dispatchEvent(event);
 }
 
+/** @param {() => boolean} predicate @param {string} message */
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    // Polling is bounded and observes the required state instead of assuming
+    // that a loaded machine will honor a fixed sleep.
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  }
+}
+
 try {
   const bundle = await readFile('dist/webOSUserScripts/userScript.js', 'utf8');
   assert.equal(bundle.includes('__ytaf_debug__'), false);
   // This isolated test executes only the locally built, integrity-checked bundle.
   window.eval(bundle);
-  await new Promise((resolve) => window.setTimeout(resolve, 100));
+  await waitFor(
+    () => Boolean(window.document.querySelector('.ytaf-ui-container')),
+    'settings panel initialization timed out'
+  );
 
   const panel = window.document.querySelector('.ytaf-ui-container');
   assert.ok(panel, 'settings panel was not created');
@@ -177,12 +192,21 @@ try {
 
   const qualityCheckbox = findCheckbox(panel, 'Force max resolution');
   dispatchCheckboxChange(qualityCheckbox, true);
-  await new Promise((resolve) => window.setTimeout(resolve, 20));
+  await waitFor(
+    () => qualitySelections.length > 0,
+    'quality selection timed out'
+  );
   assert.deepEqual(qualitySelections.at(-1), ['highres', 'highres']);
 
   window.location.hash = '/watch?v=smoke-video';
   dispatchCheckboxChange(sponsorCheckbox, true);
-  await new Promise((resolve) => window.setTimeout(resolve, 100));
+  await waitFor(
+    () =>
+      networkRequests.some((url) =>
+        url.startsWith('https://sponsor.ajay.app/api/')
+      ),
+    'SponsorBlock request timed out'
+  );
   assert.ok(
     networkRequests.some((url) =>
       url.startsWith('https://sponsor.ajay.app/api/')
@@ -191,7 +215,10 @@ try {
   );
 
   dispatchBlueKey();
-  await new Promise((resolve) => window.setTimeout(resolve, 20));
+  await waitFor(
+    () => initialVideo.style.visibility === 'hidden',
+    'screen-hidden activation timed out'
+  );
   assert.equal(initialVideo.style.visibility, 'hidden');
   assert.ok(
     initialControls.querySelector('.ytaf-ui-watchControl-overlayMessage')
@@ -204,7 +231,10 @@ try {
   window.document.body.appendChild(thumbnail);
   const thumbnailCheckbox = findCheckbox(panel, 'Upgrade thumbnail quality');
   dispatchCheckboxChange(thumbnailCheckbox, true);
-  await new Promise((resolve) => window.setTimeout(resolve, 30));
+  await waitFor(
+    () => /sddefault/.test(thumbnail.style.backgroundImage),
+    'thumbnail upgrade timed out'
+  );
   assert.match(thumbnail.style.backgroundImage, /sddefault/);
   dispatchCheckboxChange(thumbnailCheckbox, false);
   assert.equal(thumbnail.style.backgroundImage, originalThumbnail);
@@ -243,7 +273,10 @@ try {
   replacementControls.setAttribute('idomkey', 'controls');
   initialVideo.replaceWith(replacementVideo);
   initialControls.replaceWith(replacementControls);
-  await new Promise((resolve) => window.setTimeout(resolve, 120));
+  await waitFor(
+    () => replacementVideo.style.visibility === 'hidden',
+    'replacement video synchronization timed out'
+  );
   assert.equal(initialVideo.style.visibility, 'visible');
   assert.equal(replacementVideo.style.visibility, 'hidden');
   assert.ok(
@@ -251,7 +284,10 @@ try {
   );
 
   dispatchBlueKey();
-  await new Promise((resolve) => window.setTimeout(resolve, 20));
+  await waitFor(
+    () => replacementVideo.style.visibility === '',
+    'screen-hidden restoration timed out'
+  );
   assert.equal(replacementVideo.style.visibility, '');
   assert.equal(
     replacementControls.querySelector('.ytaf-ui-watchControl-overlayMessage'),

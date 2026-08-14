@@ -7,30 +7,32 @@
   "scripts": {
     "preinstall": "node tools/check-toolchain.js",
     "check:toolchain": "node tools/check-toolchain.js",
-    "build": "webpack --mode=production",
-    "build:dev": "webpack --mode=development",
-    "package": "pnpm run qa && pnpm run sbom && node tools/package.js && pnpm run verify:package",
-    "package:dev": "pnpm run qa && pnpm run sbom:dev && node tools/package.js --dev && pnpm run verify:package:dev",
+    "build": "webpack --mode=production && node tools/write-dist-fingerprint.js",
+    "build:dev": "webpack --mode=development && node tools/write-dist-fingerprint.js",
+    "package": "node tools/run-pnpm.js run qa && node tools/run-pnpm.js run sbom && node tools/package.js && node tools/run-pnpm.js run verify:package",
+    "package:dev": "node tools/run-pnpm.js run qa && node tools/run-pnpm.js run sbom:dev && node tools/package.js --dev && node tools/run-pnpm.js run verify:package:dev",
     "sbom": "node tools/gen-sbom.js",
     "sbom:dev": "node tools/gen-sbom.js --dev",
     "verify:package": "node tools/verify-package.js",
     "verify:package:dev": "node tools/verify-package.js --dev",
-    "deploy": "pnpm run verify:package && node tools/deploy.js",
-    "deploy:dev": "pnpm run verify:package:dev && node tools/deploy.js",
+    "deploy": "node tools/run-pnpm.js run verify:package && node tools/deploy.js",
+    "deploy:dev": "node tools/run-pnpm.js run verify:package:dev && node tools/deploy.js",
     "inspect": "ares-inspect youtube.leanback.v4",
     "launch": "ares-launch youtube.leanback.v4",
     "prepare": "husky",
     "test": "node --test",
-    "test:coverage": "c8 --all --clean --include=src/**/*.js --include=src/**/*.ts --exclude=src/**/*.d.ts --exclude=src/domrect-polyfill.js --exclude=src/spatial-navigation-polyfill.js --reporter=text --check-coverage --statements=70 --lines=70 --branches=70 --functions=85 node --test",
-    "test:bundle": "node tools/smoke-bundle.js",
-    "qa:playwright": "playwright test",
+    "test:coverage": "c8 --all --clean --include=src/**/*.js --include=src/**/*.ts --exclude=src/**/*.d.ts --exclude=src/globals.ts --exclude=src/domrect-polyfill.js --exclude=src/spatial-navigation-polyfill.js --reporter=text --reporter=json-summary --check-coverage --statements=70 --lines=70 --branches=70 --functions=85 node --test && node tools/check-file-coverage.js",
+    "test:tools-coverage": "c8 --clean --reports-dir=coverage-tools --include=tools/package-contract.js --include=tools/security-audit.js --include=tools/pnpm-cli.js --reporter=text --check-coverage --statements=45 --lines=45 --branches=50 --functions=40 node --test tests/tooling-contracts.test.js",
+    "test:package-integration": "c8 --clean --reports-dir=coverage-package --include=tools/gen-sbom.js --include=tools/package.js --include=tools/verify-package.js --include=tools/qa-receipt.js --include=tools/dist-fingerprint.js --reporter=text --check-coverage --statements=35 --lines=35 --branches=25 --functions=30 node --test tests/package-integration.test.js",
+    "test:bundle": "node tools/assert-dist-fresh.js && node tools/smoke-bundle.js",
+    "qa:playwright": "node tools/assert-dist-fresh.js && playwright test",
     "security:audit": "node tools/security-audit.js",
-    "test:compat": "es-check",
+    "test:compat": "node tools/assert-dist-fresh.js && es-check",
     "lint:eslint": "eslint --concurrency auto --max-warnings=0",
     "lint:tsc": "tsc -b",
     "lint:prettier": "prettier --check .",
-    "lint:all": "pnpm run \"/^lint:(?!all)/\"",
-    "qa": "pnpm run check:toolchain && pnpm run lint:all && pnpm run test:coverage && pnpm run build && pnpm run security:audit && pnpm run test:bundle && pnpm run qa:playwright && pnpm run test:compat && pnpm audit"
+    "lint:all": "node tools/run-pnpm.js run \"/^lint:(?!all)/\"",
+    "qa": "node tools/run-pnpm.js run check:toolchain && node tools/run-pnpm.js run lint:all && node tools/run-pnpm.js run test:coverage && node tools/run-pnpm.js run test:tools-coverage && node tools/run-pnpm.js run build && node tools/run-pnpm.js run security:audit && node tools/run-pnpm.js run test:bundle && node tools/run-pnpm.js run qa:playwright && node tools/run-pnpm.js run test:compat && node tools/run-pnpm.js audit && node tools/write-qa-receipt.js && node tools/run-pnpm.js run test:package-integration"
   },
   "repository": "github:zydon69/Youtube-for-LGWEBOS-AdsFree",
   "license": "GPL-3.0-only",
@@ -87,28 +89,8 @@
     "webpack-cli": "^7.2.2",
     "which-builtin-type": "^1.2.1"
   },
-  "pnpm": {
-    "overrides": {
-      "@babel/plugin-transform-modules-systemjs": "7.29.4",
-      "ajv@>=8.0.0 <8.18.0": "8.18.0",
-      "brace-expansion@<1.1.18": "1.1.18",
-      "brace-expansion@>=4.0.0 <5.0.9": "5.0.9",
-      "fast-uri": "3.1.5",
-      "flatted": "3.4.2",
-      "js-yaml": "4.3.1",
-      "nanoid@3": "3.3.17",
-      "picomatch@2": "2.3.2",
-      "picomatch@4": "4.0.4"
-    }
-  },
   "engines": {
     "node": ">=24 <25"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "onFail": "error"
-    }
   },
   "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

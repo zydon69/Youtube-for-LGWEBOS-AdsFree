@@ -5,7 +5,7 @@ import type {
   PlayerStateKeys,
   PlayerStateObject,
   VideoID,
-  YTPlayer
+  ManagedYTPlayer
 } from './yt-api.ts';
 
 const PLAYER_STATE_KEYS = [
@@ -64,7 +64,7 @@ export const PlayerMode = Object.freeze({
 export type PlayerMode = (typeof PlayerMode)[keyof typeof PlayerMode];
 
 export class PlayerManager extends CustomEventTarget<EventMap> {
-  #player: YTPlayer;
+  #player: ManagedYTPlayer;
   #lastVideoID: VideoID | null = null;
   #lastPlayerState: PlayerStateSnapshot | null = null;
   #synchronizationToken: number | null = null;
@@ -104,7 +104,7 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
     }
   };
 
-  constructor(player: YTPlayer) {
+  constructor(player: ManagedYTPlayer) {
     super();
     if (!isYTPlayer(player)) {
       throw new TypeError('YouTube player capabilities are incomplete');
@@ -186,8 +186,8 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
 
   get playerMode() {
     try {
-      if (this.#player.isInline()) return PlayerMode.PREVIEW;
-      if (this.#player.getVideoStats()?.el === 'shortspage') {
+      if (this.#player.isInline?.()) return PlayerMode.PREVIEW;
+      if (this.#player.getVideoStats?.()?.el === 'shortspage') {
         return PlayerMode.SHORTS;
       }
     } catch (error) {
@@ -196,7 +196,7 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
     return PlayerMode.NORMAL;
   }
 
-  get player(): YTPlayer {
+  get player(): ManagedYTPlayer {
     this.#synchronizePlayer();
     return this.#player;
   }

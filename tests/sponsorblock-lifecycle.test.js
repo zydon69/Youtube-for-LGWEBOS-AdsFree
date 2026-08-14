@@ -43,6 +43,19 @@ test('SponsorBlock correlates the player video before network access', async () 
   const previousFetch = globalThis.fetch;
   const previousVersion = globalThis.__YTAF_VERSION__;
   globalThis.__YTAF_VERSION__ = 'audit-test';
+  browser.localStorage.setItem(
+    'ytaf-configuration-v2',
+    JSON.stringify({
+      enableSponsorBlock: true,
+      enableSponsorBlockSponsor: false,
+      enableSponsorBlockIntro: false,
+      enableSponsorBlockOutro: false,
+      enableSponsorBlockInteraction: false,
+      enableSponsorBlockSelfPromo: false,
+      enableSponsorBlockMusicOfftopic: false,
+      enableSponsorBlockPreview: false
+    })
+  );
   let requests = 0;
   globalThis.fetch = async () => {
     requests++;
@@ -58,6 +71,7 @@ test('SponsorBlock correlates the player video before network access', async () 
   let domMutations;
   try {
     sponsorBlock = await import('../src/sponsorblock.js');
+    sponsorBlock.installSponsorBlock();
     [playerManager, ui, domMutations] = await Promise.all([
       import('../src/player_api/manager.ts'),
       import('../src/ui.js'),

@@ -42,6 +42,7 @@ test('account-selection wrapper installs lazily and follows configuration', asyn
     const config = await import('../src/config.js');
     feature = await import('../src/auto-account-select.ts');
     appAPI = await import('../src/app_api/index.ts');
+    await feature.installAutoAccountSelectFeature();
     assert.equal(instance.resolveCommand, nativeResolveCommand);
 
     config.configWrite('autoAccountSelect', true);

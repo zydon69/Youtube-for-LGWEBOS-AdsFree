@@ -1,9 +1,9 @@
 import { MAX_SPONSORBLOCK_RESPONSE_BYTES } from './sponsorblock-schema.js';
+import { SPONSORBLOCK_ORIGIN } from './runtime-origins.js';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 30_000;
-const SPONSORBLOCK_ORIGIN = 'https://sponsor.ajay.app';
 
 /** @typedef {Error & { retryable?: boolean, retryAfterMs?: number }} RetryableError */
 
@@ -25,6 +25,43 @@ function assertSponsorBlockURL(value) {
     throw new TypeError('SponsorBlock request URL is not allowed');
   }
   return url.href;
+}
+
+/** @param {string} requestURL */
+function assertSponsorBlockTransport(requestURL) {
+  try {
+    if (typeof Request !== 'function') throw new Error('Request unavailable');
+    const probe = new Request(requestURL, {
+      redirect: 'error',
+      referrerPolicy: 'no-referrer'
+    });
+    if (probe.redirect !== 'error' || probe.referrerPolicy !== 'no-referrer') {
+      throw new Error('policy options ignored');
+    }
+  } catch (cause) {
+    /** @type {RetryableError} */
+    const error = new Error(
+      'SponsorBlock requires enforceable redirect and referrer policies',
+      { cause }
+    );
+    error.retryable = false;
+    throw error;
+  }
+}
+
+/** @param {Response} response */
+function assertSponsorBlockResponse(response) {
+  if (!response.url) return;
+  try {
+    assertSponsorBlockURL(response.url);
+  } catch (cause) {
+    /** @type {RetryableError} */
+    const error = new Error('SponsorBlock redirected outside its API', {
+      cause
+    });
+    error.retryable = false;
+    throw error;
+  }
 }
 
 /** @param {number} milliseconds */
@@ -171,6 +208,7 @@ export async function fetchSponsorBlockJSON(
   { signal: externalSignal, timeoutMs = REQUEST_TIMEOUT_MS } = {}
 ) {
   const requestURL = assertSponsorBlockURL(url);
+  assertSponsorBlockTransport(requestURL);
   if (
     !Number.isFinite(timeoutMs) ||
     timeoutMs <= 0 ||
@@ -210,6 +248,7 @@ export async function fetchSponsorBlockJSON(
       const operation = (async () => {
         const response = await fetchImpl(requestURL, requestOptions);
         if (externalSignal?.aborted) throw abortError();
+        assertSponsorBlockResponse(response);
         if (!response.ok) throw createHTTPError(response);
         const body = await readBoundedBody(response);
         if (externalSignal?.aborted) throw abortError();

@@ -255,6 +255,39 @@ test('SponsorBlock sends private fetch options on streaming and legacy CORS path
   }
 });
 
+test('SponsorBlock refuses legacy transports and foreign final response URLs', async () => {
+  const nativeRequest = globalThis.Request;
+  let requests = 0;
+  try {
+    globalThis.Request = class LegacyRequest {
+      constructor(url) {
+        this.url = url;
+      }
+    };
+    await assert.rejects(
+      fetchSponsorBlockJSON('https://sponsor.ajay.app/api/test', async () => {
+        requests++;
+        return new Response('[]');
+      }),
+      /requires enforceable redirect and referrer policies/
+    );
+    assert.equal(requests, 0);
+  } finally {
+    globalThis.Request = nativeRequest;
+  }
+
+  await assert.rejects(
+    fetchSponsorBlockJSON('https://sponsor.ajay.app/api/test', async () => ({
+      ok: true,
+      status: 200,
+      url: 'https://evil.example/api/test',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => '[]'
+    })),
+    /redirected outside its API/
+  );
+});
+
 test('SponsorBlock rejects foreign endpoints and times out legacy body reads', async () => {
   await assert.rejects(
     fetchSponsorBlockJSON(
@@ -265,6 +298,14 @@ test('SponsorBlock rejects foreign endpoints and times out legacy body reads', a
   );
 
   const previousAbortController = globalThis.AbortController;
+  const previousRequest = globalThis.Request;
+  globalThis.Request = class SecureLegacyRequest {
+    constructor(url, options) {
+      this.url = url;
+      this.redirect = options.redirect;
+      this.referrerPolicy = options.referrerPolicy;
+    }
+  };
   globalThis.AbortController = undefined;
   try {
     await assert.rejects(
@@ -286,6 +327,7 @@ test('SponsorBlock rejects foreign endpoints and times out legacy body reads', a
     );
   } finally {
     globalThis.AbortController = previousAbortController;
+    globalThis.Request = previousRequest;
   }
 });
 

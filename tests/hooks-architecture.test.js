@@ -121,6 +121,58 @@ test('JSON hooks rebind a host replacement and use a bounded transform pipeline'
   assert.equal(target.parse, replacementParse);
 });
 
+test('JSON hooks preserve host wrappers that captured the previous generation', (context) => {
+  context.after(restoreJSONHooks);
+  restoreJSONHooks();
+  const target = {
+    parse: JSON.parse,
+    stringify: JSON.stringify
+  };
+  synchronizeJSONHooks(target);
+
+  let parseTransforms = 0;
+  let stringifyTransforms = 0;
+  registerJSONParseTransformer('generation-parse', (value) => {
+    parseTransforms++;
+    return { ...value, parsed: true };
+  });
+  registerJSONStringifyTransformer('generation-stringify', (value) => {
+    stringifyTransforms++;
+    return { ...value, stringified: true };
+  });
+
+  const capturedParse = target.parse;
+  const capturedStringify = target.stringify;
+  let hostParseCalls = 0;
+  let hostStringifyCalls = 0;
+  const hostParse = (...args) => {
+    hostParseCalls++;
+    return Reflect.apply(capturedParse, target, args);
+  };
+  const hostStringify = (...args) => {
+    hostStringifyCalls++;
+    return Reflect.apply(capturedStringify, target, args);
+  };
+  target.parse = hostParse;
+  target.stringify = hostStringify;
+  synchronizeJSONHooks(target);
+
+  assert.deepEqual(target.parse('{"value":1}'), { value: 1, parsed: true });
+  assert.equal(
+    target.stringify({ value: 1 }),
+    '{"value":1,"stringified":true}'
+  );
+  assert.equal(parseTransforms, 1);
+  assert.equal(stringifyTransforms, 1);
+  assert.equal(hostParseCalls, 1);
+  assert.equal(hostStringifyCalls, 2);
+
+  restoreJSONHooks();
+  assert.equal(target.parse, hostParse);
+  assert.equal(target.stringify, hostStringify);
+  assert.deepEqual(target.parse('{"value":1}'), { value: 1 });
+});
+
 test('JSON applicability avoids parsing and cloning irrelevant large payloads', (context) => {
   context.after(restoreJSONHooks);
   restoreJSONHooks();
@@ -166,6 +218,26 @@ test('JSON applicability avoids parsing and cloning irrelevant large payloads', 
   assert.equal(parseCalls, 1);
   assert.equal(stringifyCalls, 1);
   assert.equal(transformCalls, 0);
+});
+
+test('JSON hooks skip transformations beyond the bounded payload budget', (context) => {
+  context.after(restoreJSONHooks);
+  const previousWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    let transforms = 0;
+    registerJSONParseTransformer('bounded-parse', (value) => {
+      transforms++;
+      return value;
+    });
+    const oversized = JSON.stringify({
+      value: 'x'.repeat(8 * 1024 * 1024)
+    });
+    JSON.parse(oversized);
+    assert.equal(transforms, 0);
+  } finally {
+    console.warn = previousWarn;
+  }
 });
 
 test('JSON hook installation rolls back when a host method is unwritable', (context) => {
@@ -258,6 +330,47 @@ test('fetch hooks accept cross-realm request shapes and rebind host fetch', asyn
     })
   );
   assert.equal(requestEvents, 2);
+});
+
+test('fetch hooks preserve a host wrapper that captured the previous generation', async (context) => {
+  context.after(disposeFetchRegistry);
+  disposeFetchRegistry();
+  let nativeCalls = 0;
+  const nativeFetch = async () => {
+    nativeCalls++;
+    return new Response('native');
+  };
+  const target = {
+    fetch: nativeFetch,
+    location: { href: 'https://www.youtube.com/tv' }
+  };
+  const registry = FetchRegistry.getInstance(target);
+  let requestEvents = 0;
+  let responseEvents = 0;
+  registry.addEventListener('request', () => requestEvents++);
+  registry.addEventListener('response', () => responseEvents++);
+
+  const capturedHook = target.fetch;
+  let hostCalls = 0;
+  const hostWrapper = async (...args) => {
+    hostCalls++;
+    return Reflect.apply(capturedHook, target, args);
+  };
+  target.fetch = hostWrapper;
+  registry.synchronize();
+
+  assert.equal(await (await target.fetch('/tv')).text(), 'native');
+  assert.equal(hostCalls, 1);
+  assert.equal(nativeCalls, 1);
+  assert.equal(requestEvents, 1);
+  assert.equal(responseEvents, 1);
+
+  registry.dispose();
+  assert.equal(target.fetch, hostWrapper);
+  await target.fetch('/after-dispose');
+  assert.equal(requestEvents, 1);
+  assert.equal(responseEvents, 1);
+  assert.equal(nativeCalls, 2);
 });
 
 test('fetch hook installation fails without replacing an unwritable host method', (context) => {

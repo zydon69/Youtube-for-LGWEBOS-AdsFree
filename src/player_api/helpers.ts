@@ -1,19 +1,14 @@
-import { waitForChildAdd } from '../utils.js';
 import { ActiveMediaResolver } from '../core/active-media-resolver.ts';
+import { pollUntil } from '../core/poll.js';
 
-import type { YTPlayer } from './yt-api';
+import type { ManagedYTPlayer } from './yt-api';
 
 const REQUIRED_PLAYER_METHODS = [
   'addEventListener',
   'removeEventListener',
-  'getPlaybackQualityLabel',
-  'getAvailableQualityData',
-  'setPlaybackQualityRange',
   'getVideoData',
-  'getPlayerStateObject',
-  'isInline',
-  'getVideoStats'
-] as const satisfies readonly (keyof YTPlayer)[];
+  'getPlayerStateObject'
+] as const satisfies readonly (keyof ManagedYTPlayer)[];
 
 interface MatchableElement {
   matches?: (selectors: string) => boolean;
@@ -38,9 +33,9 @@ export function elementMatches(value: unknown, selectors: string) {
 }
 
 /** Runtime/cross-realm capability guard for YouTube's private player object. */
-export function isYTPlayer(value: unknown): value is YTPlayer {
+export function isYTPlayer(value: unknown): value is ManagedYTPlayer {
   if (value === null || typeof value !== 'object') return false;
-  const candidate = value as Partial<YTPlayer>;
+  const candidate = value as Partial<ManagedYTPlayer>;
   try {
     if (!elementMatches(candidate, '.html5-video-player')) {
       return false;
@@ -60,7 +55,7 @@ function getRootDocument(root: ParentNode) {
 
 export function findCapablePlayer(root: ParentNode = document) {
   const matches = root.querySelectorAll('.html5-video-player');
-  const players: YTPlayer[] = [];
+  const players: ManagedYTPlayer[] = [];
   if (isYTPlayer(root)) players.push(root);
   for (let index = 0; index < matches.length; index++) {
     const candidate = matches[index];
@@ -82,19 +77,20 @@ export function findCapablePlayer(root: ParentNode = document) {
  */
 export async function getCapablePlayer(
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
-): Promise<YTPlayer> {
+): Promise<ManagedYTPlayer> {
   const existing = findCapablePlayer();
   if (existing) return existing;
 
-  const observationRoot = document.body ?? document.documentElement;
-  if (!observationRoot) {
+  if (!document.body && !document.documentElement) {
     throw new Error(
       'Cannot observe the YouTube player before the document exists'
     );
   }
-  const observed = await waitForChildAdd(observationRoot, isYTPlayer, {
-    ...options,
-    timeoutMs: options.timeoutMs ?? 24 * 60 * 60 * 1000
+  return pollUntil(() => findCapablePlayer(), {
+    ...(options.signal ? { signal: options.signal } : {}),
+    timeoutMs: options.timeoutMs ?? 24 * 60 * 60 * 1000,
+    initialDelayMs: 25,
+    maxDelayMs: 500,
+    scheduler: window
   });
-  return findCapablePlayer() ?? observed;
 }

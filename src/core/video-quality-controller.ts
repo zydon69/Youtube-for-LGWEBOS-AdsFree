@@ -15,6 +15,16 @@ export interface QualityHost {
   isPreview(): boolean;
 }
 
+export function isQualityPlayer(value: unknown): value is QualityPlayer {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as Partial<QualityPlayer>;
+  return (
+    typeof candidate.getPlaybackQualityLabel === 'function' &&
+    typeof candidate.getAvailableQualityData === 'function' &&
+    typeof candidate.setPlaybackQualityRange === 'function'
+  );
+}
+
 interface QualityScheduler {
   setInterval(callback: () => void, delay: number): unknown;
   clearInterval(token: unknown): void;
@@ -74,12 +84,14 @@ export class VideoQualityController {
   #disposed = false;
   #generation = 0;
   #appliedVideoID: string | null = null;
+  #pendingVideoID: string | null = null;
   #intervalToken: unknown;
   #timeoutToken: unknown;
   #retryToken: unknown;
   #ownership:
     | {
         player: QualityPlayer;
+        confirmed: boolean;
         expectedQuality?: string;
       }
     | undefined;
@@ -119,6 +131,7 @@ export class VideoQualityController {
     } else {
       this.#generation++;
       this.#appliedVideoID = null;
+      this.#pendingVideoID = null;
       this.#clearTimers();
       this.#restoreAutomaticQuality();
     }
@@ -130,6 +143,7 @@ export class VideoQualityController {
       if (this.#host.isPreview()) {
         this.#generation++;
         this.#appliedVideoID = null;
+        this.#pendingVideoID = null;
         this.#clearTimers();
         this.#restoreAutomaticQuality();
         return;
@@ -157,6 +171,7 @@ export class VideoQualityController {
   #resetOperation() {
     this.#generation++;
     this.#appliedVideoID = null;
+    this.#pendingVideoID = null;
     this.#clearTimers();
   }
 
@@ -190,7 +205,13 @@ export class VideoQualityController {
     try {
       if (this.#host.isPreview()) return;
       videoID = this.#host.getVideoID();
-      if (!videoID || this.#appliedVideoID === videoID) return;
+      if (
+        !videoID ||
+        this.#appliedVideoID === videoID ||
+        this.#pendingVideoID === videoID
+      ) {
+        return;
+      }
       player = this.#host.getPlayer();
       if (this.#ownership && this.#ownership.player !== player) {
         this.#restoreAutomaticQuality();
@@ -214,10 +235,10 @@ export class VideoQualityController {
       return;
     }
 
-    this.#appliedVideoID = videoID;
+    this.#pendingVideoID = videoID;
     this.#ownership = {
       player,
-      ...(maxQuality ? { expectedQuality: maxQuality } : {})
+      confirmed: false
     };
 
     const isCurrentOperation = () => {
@@ -236,6 +257,7 @@ export class VideoQualityController {
 
     this.#intervalToken = this.#scheduler.setInterval(() => {
       if (!isCurrentOperation()) {
+        this.#pendingVideoID = null;
         this.#clearTimers();
         return;
       }
@@ -248,12 +270,16 @@ export class VideoQualityController {
           currentQuality === currentMaximum
         ) {
           if (this.#ownership?.player === player) {
+            this.#ownership.confirmed = true;
             this.#ownership.expectedQuality = currentMaximum;
           }
+          this.#appliedVideoID = videoID;
+          this.#pendingVideoID = null;
           this.#clearTimers();
           this.#notifySelection(player);
         }
       } catch (error) {
+        this.#pendingVideoID = null;
         this.#clearTimers();
         this.#warn('[video-quality] Quality polling failed', error);
       }
@@ -262,11 +288,15 @@ export class VideoQualityController {
     this.#timeoutToken = this.#scheduler.setTimeout(() => {
       this.#timeoutToken = undefined;
       if (!isCurrentOperation()) {
+        this.#pendingVideoID = null;
         this.#clearTimers();
         return;
       }
       this.#clearTimers();
-      this.#notifySelection(player);
+      this.#pendingVideoID = null;
+      this.#warn(
+        '[video-quality] High-resolution selection was not confirmed before timeout'
+      );
     }, this.#settleTimeoutMs);
   }
 
@@ -291,12 +321,13 @@ export class VideoQualityController {
 
     try {
       const selected = ownership.player.getPlaybackQualityLabel();
-      // There is no public getter for YouTube's active quality range. Only a
-      // selected target equal to the range we requested proves that our value
-      // is still authoritative; otherwise a host/user override wins.
+      // Before confirmation, our last known operation is still the explicit
+      // range write, so release it. After confirmation, preserve a subsequent
+      // host/user selection that differs from the value we confirmed.
       const stillOwned =
-        ownership.expectedQuality !== undefined &&
-        selected === ownership.expectedQuality;
+        !ownership.confirmed ||
+        (ownership.expectedQuality !== undefined &&
+          selected === ownership.expectedQuality);
       if (stillOwned) {
         ownership.player.setPlaybackQualityRange('auto', 'auto');
       }

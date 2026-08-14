@@ -144,9 +144,30 @@ test('disabling preserves host overrides and does nothing without ownership', ()
   harness.state.preview = false;
   harness.controller.setEnabled(true);
   assert.deepEqual(player.rangeCalls, [['highres', 'highres']]);
+  player.selectedQuality = '4K';
+  harness.scheduler.runIntervals();
   player.selectedQuality = '720p';
   harness.controller.setEnabled(false);
   assert.deepEqual(player.rangeCalls, [['highres', 'highres']]);
+});
+
+test('unconfirmed quality writes are retried and released on disable', () => {
+  const player = createPlayer('480p');
+  player.getAvailableQualityData = () => [];
+  const harness = createHarness(player);
+
+  harness.controller.setEnabled(true);
+  assert.deepEqual(player.rangeCalls, [['highres', 'highres']]);
+  harness.scheduler.runNextTimeout();
+  harness.controller.handlePlaybackStart();
+  assert.deepEqual(player.rangeCalls, [
+    ['highres', 'highres'],
+    ['highres', 'highres']
+  ]);
+
+  harness.controller.setEnabled(false);
+  assert.deepEqual(player.rangeCalls.at(-1), ['auto', 'auto']);
+  assert.equal(harness.warnings.length, 1);
 });
 
 test('disabling releases an owned quality range and replacement players are isolated', () => {

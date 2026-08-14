@@ -14,19 +14,16 @@ test('JSON feature wrappers honor live opt-ins and unregister completely', async
   const restoreGlobals = installDOMGlobals(browser);
   const nativeParse = JSON.parse;
   const nativeStringify = JSON.stringify;
-  let adblock;
-  let shorts;
-  let endscreen;
+  let contentFilters;
   let jsonHooks;
 
   try {
     const config = await import('../src/config.js');
-    [adblock, shorts, endscreen, jsonHooks] = await Promise.all([
-      import('../src/adblock.js'),
-      import('../src/shorts.js'),
-      import('../src/remove-endscreen.ts'),
+    [contentFilters, jsonHooks] = await Promise.all([
+      import('../src/content-filters.ts'),
       import('../src/hooks/json.ts')
     ]);
+    contentFilters.installContentFilters();
 
     const responseText = nativeStringify({
       adSlots: [{ adSlotRenderer: {} }],
@@ -69,19 +66,15 @@ test('JSON feature wrappers honor live opt-ins and unregister completely', async
       undefined
     );
 
-    adblock.dispose();
-    shorts.dispose();
-    endscreen.dispose();
-    adblock.dispose();
+    contentFilters.dispose();
+    contentFilters.dispose();
     config.configWrite('enableAdBlock', true);
     parsed = JSON.parse(responseText);
     assert.equal(parsed.adSlots.length, 1);
     assert.equal(parsed.browse.gridRenderer.items.length, 1);
     assert.equal('endscreen' in parsed.overlay, true);
   } finally {
-    adblock?.dispose();
-    shorts?.dispose();
-    endscreen?.dispose();
+    contentFilters?.dispose();
     jsonHooks?.restoreJSONHooks();
     assert.equal(JSON.parse, nativeParse);
     assert.equal(JSON.stringify, nativeStringify);
@@ -105,6 +98,7 @@ test('cast blocking wrapper is exact, reversible and keeps native requests', asy
   try {
     castBlock = await import('../src/block-webos-cast.ts');
     fetchHooks = await import('../src/hooks/fetch.ts');
+    castBlock.installBlockWebOSCast();
     await assert.rejects(
       browser.fetch('https://www.youtube.com/wake_cast_core'),
       /Failed to fetch/

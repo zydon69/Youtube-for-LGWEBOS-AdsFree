@@ -26,8 +26,10 @@ test('spatial navigation emits cancellable events without a CustomEvent construc
     DOMRect: browser.DOMRect
   });
 
+  let spatialNavigation;
   try {
-    await import('../src/spatial-navigation-polyfill.js');
+    spatialNavigation = await import('../src/spatial-navigation-polyfill.js');
+    spatialNavigation.installSpatialNavigationPolyfill();
     let observed;
     const handleNavigationEvent = (event) => {
       observed = event;
@@ -47,6 +49,7 @@ test('spatial navigation emits cancellable events without a CustomEvent construc
     assert.equal(observed?.cancelable, true);
     assert.equal(observed?.defaultPrevented, true);
   } finally {
+    spatialNavigation?.disposeSpatialNavigationPolyfill();
     Object.assign(globalThis, previous);
     await browser.close();
   }

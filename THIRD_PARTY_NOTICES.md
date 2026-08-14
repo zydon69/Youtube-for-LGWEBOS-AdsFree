@@ -2,9 +2,16 @@
 
 The production bundle includes or adapts the following software:
 
-- WICG Spatial Navigation Polyfill, copyright 2018–2019 LG Electronics Inc., MIT.
-- Financial Times Polyfill Library DOMRect polyfill, MIT.
-- Babel runtime, core-js, regenerator-runtime and whatwg-fetch, MIT.
+- WICG Spatial Navigation Polyfill, copyright 2018–2019 LG Electronics Inc.,
+  MIT.
+- Financial Times Polyfill Library DOMRect polyfill, maintained by the
+  Financial Times polyfill-library contributors, MIT.
+- Babel runtime and runtime-corejs3, copyright 2014–present Sebastian
+  McKenzie and other contributors, MIT.
+- core-js-pure, copyright 2013–2025 Denis Pushkarev and 2025–2026 CoreJS
+  Company, MIT.
+- regenerator-runtime, copyright 2014–present Facebook, Inc., MIT.
+- whatwg-fetch, copyright 2014–2023 GitHub, Inc., MIT.
 - tiny-sha256 by Geraint Luff, released as public domain.
 
 ## MIT License

@@ -1,4 +1,4 @@
-const YOUTUBE_ORIGIN = 'https://www.youtube.com';
+import { YOUTUBE_ORIGIN } from './runtime-origins.js';
 const CONTENT_INTENT_REGEX = /^(search|play|browse)Content$/i;
 const MAX_RAW_PARAMS_LENGTH = 16 * 1024;
 const MAX_CONTENT_TARGET_LENGTH = 4 * 1024;
@@ -198,4 +198,4 @@ export function buildLaunchURL(rawParams) {
   return url;
 }
 
-export { YOUTUBE_ORIGIN };
+export { YOUTUBE_ORIGIN } from './runtime-origins.js';

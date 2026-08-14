@@ -198,3 +198,104 @@ test('resolveCommand registry composes hooks and rebinds replaced instances', as
   registry.destroy();
   assert.equal(secondInstance.resolveCommand, secondOriginal);
 });
+
+test('resolveCommand rebind preserves a host wrapper that captured the hook', async () => {
+  const calls = [];
+  function targetConstructor() {}
+  const instance = {
+    resolveCommand(payload) {
+      calls.push(payload);
+      return payload;
+    }
+  };
+  targetConstructor.instance = instance;
+  globalThis.window = {
+    _yttv: { targetConstructor },
+    setInterval,
+    clearInterval,
+    setTimeout,
+    clearTimeout
+  };
+
+  const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
+  const registry = await ResolveCommandRegistry.getInstance({ timeoutMs: 100 });
+  registry.setHook('wrapped', (payload) => ({ ...payload, transformed: true }));
+  const capturedHook = instance.resolveCommand;
+  let hostCalls = 0;
+  const hostWrapper = function (payload, extra) {
+    hostCalls++;
+    return Reflect.apply(capturedHook, this, [payload, extra]);
+  };
+  instance.resolveCommand = hostWrapper;
+  await ResolveCommandRegistry.getInstance();
+
+  instance.resolveCommand({ wrapped: true });
+  assert.equal(hostCalls, 1);
+  assert.deepEqual(calls, [{ wrapped: true, transformed: true }]);
+
+  registry.destroy();
+  assert.equal(instance.resolveCommand, hostWrapper);
+  instance.resolveCommand({ wrapped: true });
+  assert.deepEqual(calls.at(-1), { wrapped: true });
+});
+
+test('resolveCommand callers have independent timeouts', async () => {
+  function targetConstructor() {}
+  globalThis.window = {
+    _yttv: {},
+    setInterval,
+    clearInterval,
+    setTimeout,
+    clearTimeout
+  };
+  const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
+  const shortWait = ResolveCommandRegistry.getInstance({ timeoutMs: 30 });
+  const longWait = ResolveCommandRegistry.getInstance({ timeoutMs: 300 });
+  setTimeout(() => {
+    targetConstructor.instance = {
+      resolveCommand(payload) {
+        return payload;
+      }
+    };
+    globalThis.window._yttv.targetConstructor = targetConstructor;
+  }, 80);
+
+  await assert.rejects(shortWait, /timed out after 30ms/);
+  const registry = await longWait;
+  assert.ok(registry instanceof ResolveCommandRegistry);
+  registry.destroy();
+});
+
+test('deferred resolveCommand hooks bind targets that appear after bootstrap', async () => {
+  let synchronize;
+  globalThis.window = {
+    _yttv: {},
+    setInterval(callback) {
+      synchronize = callback;
+      return 1;
+    },
+    clearInterval,
+    setTimeout,
+    clearTimeout
+  };
+  const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
+  const registry = ResolveCommandRegistry.getDeferredInstance();
+  registry.setHook('lateCommand', (payload) => ({
+    ...payload,
+    deferred: true
+  }));
+
+  const calls = [];
+  function lateConstructor() {}
+  lateConstructor.instance = {
+    resolveCommand(payload) {
+      calls.push(payload);
+      return payload;
+    }
+  };
+  globalThis.window._yttv.lateConstructor = lateConstructor;
+  synchronize();
+  lateConstructor.instance.resolveCommand({ lateCommand: true });
+  assert.deepEqual(calls, [{ lateCommand: true, deferred: true }]);
+  registry.destroy();
+});

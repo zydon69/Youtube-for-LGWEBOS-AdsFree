@@ -11,6 +11,20 @@
 - Exit criterion: LG provides a supported identifier and DIAL integration for
   third-party applications.
 
+## Stock-compatible application privileges
+
+- Owner: `zydon69`.
+- Reason: `trustLevel: netcast` and `privilegedJail` reproduce the stock
+  application's webOS execution profile required by DIAL, input registration
+  and replacement installation. The JavaScript does not call Luna services or
+  expose a general native bridge.
+- Horizon: review on every manifest or minimum-webOS change.
+- Controls: exact manifest contract in packaging, top-frame/exact-origin
+  runtime guard, CORS enforcement, egress sink inventory and no dynamic code
+  execution in first-party sources.
+- Exit criterion: physical-device tests prove the same integrations work with
+  a less privileged documented webOS profile.
+
 ## Source GitHub Actions disabled
 
 - Owner: `zydon69`.
@@ -58,17 +72,15 @@
 ## Legacy buffered fetch
 
 - Owner: SponsorBlock integration (`zydon69`).
-- Reason: older supported webOS engines expose a buffered fetch polyfill with
-  neither response streams nor `AbortController`.
+- Reason: older webOS engines expose a buffered fetch polyfill that cannot
+  enforce the no-redirect and no-referrer policy required by SponsorBlock.
 - Horizon: review whenever the minimum supported webOS version changes.
-- Controls: opt-in only, official HTTPS endpoint, JSON `Content-Type` required
-  when CORS does not expose `Content-Length`, decoded UTF-8 size recheck after
-  the unavoidable legacy buffer, a logical timeout covering fetch and body
-  decoding, schema bounds and stale-result discard. On engines without
-  `AbortController`, the rejected request's underlying network buffer may still
-  continue until the browser finishes it.
-- Exit criterion: all supported engines provide streaming fetch and abortable
-  requests, or the integration moves to a transport with progress cancellation.
+- Controls: SponsorBlock now fails closed on transports that do not retain
+  `redirect: error` and `referrerPolicy: no-referrer`. Native transports also
+  revalidate the final response URL, bound response bytes and retries, and
+  discard stale results. Ad blocking and all local features remain available.
+- Exit criterion: a legacy transport can cryptographically and technically
+  enforce the same redirect/referrer policy as native fetch.
 
 ## webOS compatibility User-Agent
 
@@ -98,6 +110,33 @@
 - Exit criterion: an organization-managed signing or transparency service can
   issue and verify release attestations without exposing credentials to the
   repository or untrusted contributions.
+
+## Local non-hermetic builder
+
+- Owner: release maintainers (`zydon69`).
+- Reason: GitHub Actions are intentionally disabled and the project does not
+  currently provide an organization-managed immutable build image or an
+  independent second builder.
+- Horizon: must be reviewed before every public release; target milestone is
+  the first signed public release.
+- Controls: pinned Node/pnpm versions, frozen lockfile integrity, exact vendored
+  hashes, clean reviewed Git state, QA receipt bound to source/lock/dist,
+  deterministic rebuild, SBOM, provenance and externally signed checksums.
+- Exit criterion: two isolated builders starting from the signed tag and empty
+  package stores produce byte-identical IPKs and independently signed
+  attestations.
+
+## Solo-maintainer GitHub review policy
+
+- Owner: repository administrator (`zydon69`).
+- Reason: the repository currently has no second maintainer available to
+  provide a mandatory CODEOWNER approval while GitHub Actions remain disabled.
+- Horizon: review before accepting any external contribution or publishing the
+  first signed release.
+- Controls: protected `main`, no force-push or deletion, linear history,
+  conversation resolution, local zero-warning QA and signed release tag.
+- Exit criterion: configure at least one independent required CODEOWNER
+  approval, approval of the latest push and verified commit/tag signatures.
 
 ## JavaScript test type coverage
 

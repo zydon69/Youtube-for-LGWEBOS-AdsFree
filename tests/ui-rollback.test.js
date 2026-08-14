@@ -13,8 +13,7 @@ test('UI initialization restores globals and DOM when observation fails', async 
   const browser = new Window({ url: 'https://www.youtube.com/tv#/' });
   const restoreGlobals = installDOMGlobals(browser);
   globalThis.__YTAF_VERSION__ = 'audit-test';
-  await import('../src/spatial-navigation-polyfill.js');
-  browser.__spatialNavigation__.keyMode = 'ARROW';
+  browser.__spatialNavigation__ = { keyMode: 'ARROW' };
   const hostCommand = () => 'host command';
   browser.ytaf_showOptionsPanel = hostCommand;
   globalThis.MutationObserver = class {
@@ -26,7 +25,8 @@ test('UI initialization restores globals and DOM when observation fails', async 
   };
 
   try {
-    await assert.rejects(import('../src/ui.js'), /observer unavailable/);
+    const ui = await import('../src/ui.js');
+    assert.throws(() => ui.installUI(), /observer unavailable/);
     assert.equal(browser.document.querySelector('.ytaf-ui-container'), null);
     assert.equal(browser.ytaf_showOptionsPanel, hostCommand);
     assert.equal(browser.__spatialNavigation__.keyMode, 'ARROW');

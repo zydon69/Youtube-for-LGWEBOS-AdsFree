@@ -15,8 +15,7 @@ test('UI owns modal and screen-hidden state only for its active lifecycle', asyn
   const browser = new Window({ url: 'https://www.youtube.com/tv#/' });
   const restoreGlobals = installDOMGlobals(browser);
   globalThis.__YTAF_VERSION__ = 'audit-test';
-  await import('../src/spatial-navigation-polyfill.js');
-  browser.__spatialNavigation__.keyMode = 'ARROW';
+  browser.__spatialNavigation__ = { keyMode: 'ARROW' };
   const previousPanelCommand = () => 'host command';
   browser.ytaf_showOptionsPanel = previousPanelCommand;
 
@@ -40,17 +39,32 @@ test('UI owns modal and screen-hidden state only for its active lifecycle', asyn
   audioOverlay.className = 'ytLrAudioPlayerOverlayAudioMode';
   audioOverlay.style.filter = 'contrast(2)';
   player.append(video, controls, audioOverlay);
+  browser.document.body.classList.add('app-quality-root');
   browser.document.body.append(hostContent, player);
   focusOrigin.focus();
 
   let ui;
   try {
     ui = await import('../src/ui.js');
+    ui.installUI();
+    const { configWrite } = await import('../src/config.js');
+    assert.equal(
+      browser.document.body.classList.contains('app-quality-root'),
+      false
+    );
     assert.equal(browser.__spatialNavigation__.keyMode, 'NONE');
     const panel = browser.document.querySelector('.ytaf-ui-container');
     assert.ok(panel instanceof browser.HTMLElement);
     assert.equal(panel.getAttribute('role'), 'dialog');
     assert.equal(typeof browser.ytaf_showOptionsPanel, 'function');
+
+    configWrite('hideLogo', true);
+    assert.match(browser.document.head.textContent, /visibility: hidden/);
+    configWrite('hideLogo', false);
+    assert.doesNotMatch(
+      browser.document.head.textContent,
+      /visibility: hidden/
+    );
 
     const openEvent = dispatchLegacyKey(browser, 'keydown', 404);
     assert.equal(openEvent.defaultPrevented, true);
@@ -106,6 +120,45 @@ test('UI owns modal and screen-hidden state only for its active lifecycle', asyn
     );
     previewPlayer.remove();
 
+    Object.defineProperty(video, 'paused', {
+      configurable: true,
+      value: true
+    });
+    video.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 320,
+      bottom: 180,
+      width: 320,
+      height: 180
+    });
+    const replacementPlayer = browser.document.createElement('div');
+    replacementPlayer.className = 'html5-video-player';
+    const replacementVideo = browser.document.createElement('video');
+    Object.defineProperty(replacementVideo, 'paused', {
+      configurable: true,
+      value: false
+    });
+    replacementVideo.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 640,
+      bottom: 360,
+      width: 640,
+      height: 360
+    });
+    const replacementControls = browser.document.createElement('div');
+    replacementControls.setAttribute('idomkey', 'controls');
+    replacementPlayer.append(replacementVideo, replacementControls);
+    browser.document.body.appendChild(replacementPlayer);
+    await waitForTimers(90);
+    assert.equal(video.style.visibility, 'visible');
+    assert.equal(replacementVideo.style.visibility, 'hidden');
+    assert.equal(
+      replacementControls.firstElementChild?.textContent,
+      'Screen hidden - Press [BLUE] to toggle'
+    );
+
     dispatchLegacyKey(browser, 'keydown', 406);
     await waitForTimers(10);
     assert.equal(video.style.visibility, 'visible');
@@ -136,6 +189,10 @@ test('UI owns modal and screen-hidden state only for its active lifecycle', asyn
     assert.equal(hostContent.getAttribute('aria-hidden'), 'false');
     assert.equal(browser.ytaf_showOptionsPanel, previousPanelCommand);
     assert.equal(browser.__spatialNavigation__.keyMode, 'ARROW');
+    assert.equal(
+      browser.document.body.classList.contains('app-quality-root'),
+      true
+    );
     assert.equal(browser.document.activeElement, focusOrigin);
 
     dispatchLegacyKey(browser, 'keydown', 404);

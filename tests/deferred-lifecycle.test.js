@@ -26,6 +26,8 @@ test('disposing deferred features prevents later DOMContentLoaded activation', a
       import('../src/watch.js'),
       import('../src/screensaver-fix.ts')
     ]);
+    watch.installWatch();
+    screensaver.installScreensaverFix();
     watch.dispose();
     screensaver.dispose();
 

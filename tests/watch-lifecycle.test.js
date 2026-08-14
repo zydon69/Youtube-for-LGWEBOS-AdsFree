@@ -25,6 +25,7 @@ test('watch follows player replacement, host removal and live configuration', as
   let watchModule;
   try {
     watchModule = await import('../src/watch.js');
+    watchModule.installWatch();
     const { configWrite } = await import('../src/config.js');
     let watch = browser.document.querySelector('.webOs-watch');
     assert.ok(watch instanceof browser.HTMLElement);

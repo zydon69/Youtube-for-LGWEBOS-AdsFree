@@ -1,16 +1,5 @@
-export const PlayerState = Object.freeze({
-  UNSTARTED: -1,
-  ENDED: 0,
-  PLAYING: 1,
-  PAUSED: 2,
-  BUFFERING: 3,
-  CUED: 5
-} as const);
-
-export type PlayerState = (typeof PlayerState)[keyof typeof PlayerState];
-
 interface YTPlayerEventMap extends HTMLElementEventMap {
-  onStateChange: PlayerState;
+  onStateChange: number;
 }
 
 interface VideoQualityData {
@@ -46,7 +35,7 @@ export interface VideoStats {
   el?: 'leanback' | 'shortspage';
 }
 
-export interface YTPlayer extends HTMLElement {
+export interface ManagedYTPlayer extends HTMLElement {
   addEventListener<K extends keyof YTPlayerEventMap>(
     type: K,
     listener: (this: YTPlayer, ev: YTPlayerEventMap[K]) => any,
@@ -59,6 +48,16 @@ export interface YTPlayer extends HTMLElement {
     options?: boolean | EventListenerOptions
   ): void;
 
+  getVideoData(): VideoData;
+
+  getPlayerStateObject(): PlayerStateObject;
+
+  isInline?(): boolean;
+
+  getVideoStats?(): VideoStats;
+}
+
+export interface YTPlayer extends ManagedYTPlayer {
   getPlaybackQualityLabel(): string; // empty if not available
 
   /**
@@ -69,10 +68,6 @@ export interface YTPlayer extends HTMLElement {
   getAvailableQualityData(): VideoQualityData[];
 
   setPlaybackQualityRange(min: string, max: string, formatId?: string): void;
-
-  getVideoData(): VideoData;
-
-  getPlayerStateObject(): PlayerStateObject;
 
   /**
    * `true` if playing a preview. Otherwise `false`.

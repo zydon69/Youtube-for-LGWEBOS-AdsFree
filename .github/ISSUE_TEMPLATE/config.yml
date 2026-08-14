@@ -2,7 +2,7 @@ blank_issues_enabled: false
 contact_links:
   - name: webOS Brew Discord
     url: https://discord.gg/xWqRVEm
-    about: Join our Discord community for discussions and support.
+    about: General webOS community support; this independent fork is not maintained by webOS Brew.
   - name: webOS Brew App Repository
     url: https://github.com/webosbrew/apps-repo
     about: Report issues with a webOS Brew app not related to youtube-webos.

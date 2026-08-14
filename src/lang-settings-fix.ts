@@ -29,8 +29,8 @@ function isLanguageSetting(value: unknown) {
   );
 }
 
-export async function installLanguageSettingsFix() {
-  const registry = await ResolveCommandRegistry.getInstance();
+export function installLanguageSettingsFix() {
+  const registry = ResolveCommandRegistry.getDeferredInstance();
   if (disposed) return;
 
   const hook: ResolveCommandHook = (payload) => {
@@ -48,7 +48,7 @@ export async function installLanguageSettingsFix() {
     const expires = new Date();
     expires.setFullYear(expires.getFullYear() + 10);
     const encodedPrefs = prefs.toString();
-    document.cookie = `PREF=${encodedPrefs}; Domain=.youtube.com; Path=/; Secure; SameSite=Lax; expires=${expires.toUTCString()};`;
+    document.cookie = `PREF=${encodedPrefs}; Path=/; Secure; SameSite=Lax; expires=${expires.toUTCString()};`;
     if (getPrefsCookie().get('hl') !== languageSetting.stringValue) {
       console.warn('[lang-settings-fix] PREF cookie write was rejected');
       return payload;
@@ -86,7 +86,3 @@ export function dispose() {
   installedRegistry?.removeHook('setClientSettingEndpoint');
   installedRegistry = null;
 }
-
-void installLanguageSettingsFix().catch((error) => {
-  console.warn('[lang-settings-fix] Feature unavailable', error);
-});

@@ -6,8 +6,6 @@ import {
 } from './config';
 import { transformAccountSelectorCommand } from './core/account-selection';
 
-export { transformAccountSelectorCommand } from './core/account-selection';
-
 const hook: ResolveCommandHook = (payload) =>
   configRead('autoAccountSelect')
     ? transformAccountSelectorCommand(payload)
@@ -15,6 +13,7 @@ const hook: ResolveCommandHook = (payload) =>
 
 let installedRegistry: ResolveCommandRegistry | null = null;
 let installationGeneration = 0;
+let featureInstalled = false;
 
 export async function installAutoAccountSelect() {
   const generation = ++installationGeneration;
@@ -51,15 +50,21 @@ const handleConfigChange = (event: CustomEvent<{ newValue: boolean }>) => {
   synchronizeAutoAccountSelect(event.detail.newValue);
 };
 
-try {
+export async function installAutoAccountSelectFeature() {
+  if (featureInstalled) return;
   configAddChangeListener('autoAccountSelect', handleConfigChange);
-  synchronizeAutoAccountSelect(configRead('autoAccountSelect'));
-} catch (error) {
-  dispose();
-  throw error;
+  featureInstalled = true;
+  try {
+    if (configRead('autoAccountSelect')) await installAutoAccountSelect();
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }
 
 export function dispose() {
+  if (!featureInstalled) return;
+  featureInstalled = false;
   configRemoveChangeListener('autoAccountSelect', handleConfigChange);
   disposeAutoAccountSelect();
 }

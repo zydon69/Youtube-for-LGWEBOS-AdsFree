@@ -10,6 +10,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 export const PROJECT_ROOT = fileURLToPath(new URL('../', import.meta.url));
 export const DIST_DIRECTORY = join(PROJECT_ROOT, 'dist');
@@ -19,6 +20,47 @@ export const APP_TITLE = 'YouTube AdFree';
 export const REPOSITORY_URL =
   'https://github.com/zydon69/Youtube-for-LGWEBOS-AdsFree';
 export const ARTIFACT_CONTRACT_VERSION = 1;
+
+const WEBOS_VERSION_PATTERN =
+  /^(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})\.(?:0|[1-9]\d{0,8})$/;
+
+const EXPECTED_APPINFO = Object.freeze({
+  id: APP_ID,
+  vendor: 'zydon69',
+  type: 'web',
+  main: 'index.html',
+  title: APP_TITLE,
+  icon: 'icon.png',
+  largeIcon: 'largeIcon.png',
+  mediumLargeIcon: 'mediumLargeIcon.png',
+  extraLargeIcon: 'extraLargeIcon.png',
+  playIcon: 'playIcon.png',
+  iconColor: '#ff0000',
+  splashBackground: 'splashBackground-v1.png',
+  imageForRecents: 'imageForRecents.png',
+  bgImage: 'bgImage.png',
+  support360Content: true,
+  checkUpdateOnLaunch: false,
+  accessibility: { supportsAudioGuidance: true },
+  vendorExtension: {
+    userAgent:
+      '$browserName$/$browserVersion$ ($platformName$-$platformVersion$), _TV_O18/$firmwareVersion$ (LG, $modelName$, $networkMode$)',
+    allowCrossDomain: false
+  },
+  deeplinkingParams: '{"contentTarget":"v=$CONTENTID"}',
+  inAppSearchParams: '{"target":"q=$SEARCH_KEYWORD"}',
+  inAppVoiceIntent:
+    '{"target":{"intent":"$INTENT","intentParam":"$INTENT_PARAM","languageCode":"$LANG_CODE"}}',
+  supportQueryRouting: '{"amazonAlexa":true,"googleAssistant":true}',
+  enablePigScreenSaver: false,
+  trustLevel: 'netcast',
+  privilegedJail: true,
+  supportQuickStart: true,
+  dialAppName: 'YouTube',
+  disableBackHistoryAPI: true,
+  supportGIP: true,
+  wolwowlan: true
+});
 
 export const EXPECTED_APP_FILES = Object.freeze([
   'appinfo.json',
@@ -153,6 +195,17 @@ function git(args) {
   return gitRaw(args).trim();
 }
 
+/** @param {string} value */
+function normalizeRepositoryURL(value) {
+  return value
+    .trim()
+    .replace(/^git@github\.com:/i, 'https://github.com/')
+    .replace(/^ssh:\/\/git@github\.com\//i, 'https://github.com/')
+    .replace(/\.git\/?$/i, '')
+    .replace(/\/$/, '')
+    .toLowerCase();
+}
+
 const buildInputPathspecs = Object.freeze([
   'src',
   'assets',
@@ -214,9 +267,25 @@ async function hashWorkingSourceTree(ignoredInputs) {
     if (!absolutePath.startsWith(expectedPrefix)) {
       throw new Error(`Source path escapes the repository: ${file}`);
     }
-    // Sequential reads preserve canonical ordering and bound peak memory.
-    // eslint-disable-next-line no-await-in-loop
-    const metadata = await lstat(absolutePath);
+    let metadata;
+    try {
+      // Development evidence must represent tracked deletions rather than
+      // failing before it can describe the dirty source tree.
+      // eslint-disable-next-line no-await-in-loop
+      metadata = await lstat(absolutePath);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      ) {
+        digest.update(file, 'utf8');
+        digest.update('\0DELETED\n', 'ascii');
+        continue;
+      }
+      throw error;
+    }
     if (!metadata.isFile()) {
       throw new Error(`Unsupported tracked source entry: ${file}`);
     }
@@ -241,8 +310,72 @@ export function parseBuildMode(args = process.argv.slice(2)) {
   return args.includes('--dev') ? 'development' : 'release';
 }
 
-/** @param {'release' | 'development'} mode */
-export async function getBuildProvenance(mode) {
+/**
+ * @param {{ branch: string, remoteURL: string, head: string, remoteHead: string, exactTag: string, tagSignatureValid: boolean, flagged: string[] }} snapshot
+ * @param {string} expectedVersion
+ */
+export function assertReleaseState(snapshot, expectedVersion) {
+  const expectedTag = `v${expectedVersion}`;
+  if (snapshot.branch !== 'main') {
+    throw new Error(
+      `Release packaging requires main; found ${snapshot.branch}`
+    );
+  }
+  if (
+    normalizeRepositoryURL(snapshot.remoteURL) !==
+    normalizeRepositoryURL(REPOSITORY_URL)
+  ) {
+    throw new Error(`Release origin does not match ${REPOSITORY_URL}`);
+  }
+  if (snapshot.remoteHead !== snapshot.head) {
+    throw new Error('Release HEAD must exactly match the live origin/main');
+  }
+  if (snapshot.exactTag !== expectedTag) {
+    throw new Error(`Release HEAD must carry the exact tag ${expectedTag}`);
+  }
+  if (!snapshot.tagSignatureValid) {
+    throw new Error(`Release tag ${expectedTag} must have a valid signature`);
+  }
+  if (snapshot.flagged.length > 0) {
+    throw new Error(
+      `Release inputs use hidden Git index flags:\n${snapshot.flagged.slice(0, 20).join('\n')}`
+    );
+  }
+}
+
+/** @param {string} expectedVersion */
+function assertReleaseGitState(expectedVersion) {
+  const expectedTag = `v${expectedVersion}`;
+  let tagSignatureValid = true;
+  try {
+    gitRaw(['verify-tag', expectedTag]);
+  } catch {
+    tagSignatureValid = false;
+  }
+  const remoteLine = git([
+    'ls-remote',
+    '--exit-code',
+    'origin',
+    'refs/heads/main'
+  ]);
+  assertReleaseState(
+    {
+      branch: git(['symbolic-ref', '--quiet', '--short', 'HEAD']),
+      remoteURL: git(['config', '--get', 'remote.origin.url']),
+      head: git(['rev-parse', 'HEAD']),
+      remoteHead: remoteLine.split(/\s+/)[0] ?? '',
+      exactTag: git(['describe', '--tags', '--exact-match', 'HEAD']),
+      tagSignatureValid,
+      flagged: gitRaw(['ls-files', '-v', '--', ...buildInputPathspecs])
+        .split('\n')
+        .filter((line) => /^[a-zS]/.test(line))
+    },
+    expectedVersion
+  );
+}
+
+/** @param {'release' | 'development'} mode @param {string} [expectedVersion] */
+export async function getBuildProvenance(mode, expectedVersion) {
   const status = git(['status', '--porcelain=v1', '--untracked-files=all']);
   const ignoredInputs = ignoredBuildInputs();
   const dirty = status.length > 0 || ignoredInputs.length > 0;
@@ -255,6 +388,10 @@ export async function getBuildProvenance(mode) {
       'Release packaging requires a clean Git tree. Use the explicitly marked ' +
         `development workflow for local artifacts.\n${details.slice(0, 20).join('\n')}`
     );
+  }
+  if (mode === 'release') {
+    if (!expectedVersion) throw new Error('Release version is required');
+    assertReleaseGitState(expectedVersion);
   }
 
   return Object.freeze({
@@ -272,45 +409,34 @@ export function assertAppInfo(value, packageVersion) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('appinfo.json must contain an object');
   }
-  const appInfo = /** @type {Record<string, any>} */ (value);
-  if (appInfo.id !== APP_ID)
-    throw new Error(`Application id must be ${APP_ID}`);
-  if (!/^[a-z][a-z0-9]*(?:\.[a-z0-9][a-z0-9-]*)+$/.test(appInfo.id)) {
-    throw new Error('Application id is not safe for package paths');
+  const appInfo = /** @type {Record<string, unknown>} */ (value);
+  assertWebOSVersion(packageVersion);
+  if (appInfo.version !== packageVersion) {
+    throw new Error('appinfo.json version must match package.json');
   }
-  if (
-    typeof packageVersion !== 'string' ||
-    !/^\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?$/i.test(packageVersion) ||
-    appInfo.version !== packageVersion
-  ) {
-    throw new Error('appinfo.json version must match a valid package version');
+  const expected = { ...EXPECTED_APPINFO, version: packageVersion };
+  if (!isDeepStrictEqual(appInfo, expected)) {
+    throw new Error(
+      'appinfo.json does not exactly match the reviewed webOS metadata contract'
+    );
   }
-  if (appInfo.type !== 'web' || appInfo.main !== 'index.html') {
-    throw new Error('Unexpected webOS application entry contract');
+  return /** @type {Record<string, any>} */ (appInfo);
+}
+
+/** @param {unknown} version */
+export function assertWebOSVersion(version) {
+  if (typeof version !== 'string' || !WEBOS_VERSION_PATTERN.test(version)) {
+    throw new Error(
+      'webOS version must contain exactly three dot-separated integers, ' +
+        'without leading zeroes and with at most nine digits per component'
+    );
   }
-  if (appInfo.title !== APP_TITLE) {
-    throw new Error(`Application title must be ${APP_TITLE}`);
-  }
-  if (appInfo.vendorExtension?.allowCrossDomain !== false) {
-    throw new Error('allowCrossDomain must remain false');
-  }
-  if (appInfo.accessibility?.supportsAudioGuidance !== true) {
-    throw new Error('Audio-guidance support metadata must remain enabled');
-  }
-  if (appInfo.trustLevel !== 'netcast') {
-    throw new Error('Unexpected application trust level');
-  }
-  return appInfo;
+  return version;
 }
 
 /** @param {{ version?: unknown, license?: unknown }} packageMetadata */
 export function assertPackageMetadata(packageMetadata) {
-  if (
-    typeof packageMetadata.version !== 'string' ||
-    !/^\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?$/i.test(packageMetadata.version)
-  ) {
-    throw new Error('package.json contains an invalid version');
-  }
+  assertWebOSVersion(packageMetadata.version);
   if (packageMetadata.license !== 'GPL-3.0-only') {
     throw new Error('package.json license must remain GPL-3.0-only');
   }
@@ -318,9 +444,7 @@ export function assertPackageMetadata(packageMetadata) {
 
 /** @param {string} version */
 export function artifactNames(version) {
-  if (!/^\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?$/i.test(version)) {
-    throw new Error('Unsafe artifact version');
-  }
+  assertWebOSVersion(version);
   const ipk = `${APP_ID}_${version}_all.ipk`;
   return Object.freeze({
     ipk,

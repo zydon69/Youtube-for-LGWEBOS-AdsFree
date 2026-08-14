@@ -1,6 +1,5 @@
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import pkgJson from '../package.json' with { type: 'json' };
@@ -18,16 +17,45 @@ import {
   writeFileAtomic
 } from './package-contract.js';
 
+const REQUIRED_NOTICE_MARKERS = new Map([
+  ['@babel/runtime-corejs3', ['runtime-corejs3', 'Sebastian McKenzie']],
+  ['core-js-pure', ['core-js-pure', 'Denis Pushkarev']],
+  ['regenerator-runtime', ['regenerator-runtime', 'Facebook, Inc.']],
+  ['tiny-sha256', ['tiny-sha256', 'Geraint Luff']],
+  ['whatwg-fetch', ['whatwg-fetch', 'GitHub, Inc.']],
+  [
+    'Financial Times Polyfill Library DOMRect',
+    ['Financial Times Polyfill Library DOMRect', 'Financial Times']
+  ],
+  [
+    'WICG Spatial Navigation Polyfill',
+    ['WICG Spatial Navigation Polyfill', 'LG Electronics Inc.']
+  ]
+]);
+
+/** @param {Array<Record<string, any>>} components @param {string} notices */
+export function assertRuntimeNotices(components, notices) {
+  const normalizedNotices = notices.replace(/\s+/g, ' ');
+  for (const component of components) {
+    if (component.scope !== 'required') continue;
+    const markers = REQUIRED_NOTICE_MARKERS.get(component.name);
+    if (
+      !markers ||
+      markers.some((marker) => !normalizedNotices.includes(marker))
+    ) {
+      throw new Error(
+        `THIRD_PARTY_NOTICES.md is incomplete for ${component.name}`
+      );
+    }
+  }
+}
+import { runPinnedPnpm } from './pnpm-cli.js';
+
 /** @param {string[]} args */
 function runPnpm(args) {
-  const executablePath = [dirname(process.execPath), process.env.PATH]
-    .filter(Boolean)
-    .join(delimiter);
-  return execFileSync('pnpm', args, {
+  return runPinnedPnpm(args, {
     cwd: PROJECT_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, PATH: executablePath },
-    shell: false,
     stdio: ['ignore', 'pipe', 'pipe']
   }).trim();
 }
@@ -140,7 +168,7 @@ export async function generateSbom(options = {}) {
   const licenses = collectLicenses(
     JSON.parse(runPnpm(['licenses', 'list', '--json']))
   );
-  const provenance = await getBuildProvenance(mode);
+  const provenance = await getBuildProvenance(mode, pkgJson.version);
   const distTreeSha256 = await hashDirectory(distDirectory, EXPECTED_APP_FILES);
   const lockfileSha256 = sha256(
     await readFile(join(PROJECT_ROOT, 'pnpm-lock.yaml'))
@@ -273,6 +301,10 @@ export async function generateSbom(options = {}) {
 
   const sortedComponents = [...components.values()].sort((left, right) =>
     left['bom-ref'].localeCompare(right['bom-ref'])
+  );
+  assertRuntimeNotices(
+    sortedComponents,
+    await readFile(join(PROJECT_ROOT, 'THIRD_PARTY_NOTICES.md'), 'utf8')
   );
   const serialSeed = [
     provenance.sourceTreeSha256,
