@@ -58,7 +58,7 @@
     "@types/babel__core": "^7.20.5",
     "@types/babel__plugin-transform-runtime": "^7.9.5",
     "@types/eslint-config-prettier": "^6.11.3",
-    "@types/node": "^24.13.3",
+    "@types/node": "^26.1.2",
     "babel-loader": "^10.1.1",
     "babel-plugin-polyfill-corejs3": "^0.14.2",
     "babel-plugin-polyfill-regenerator": "^0.6.8",
