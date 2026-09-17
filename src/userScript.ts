@@ -32,10 +32,6 @@ const modules = [
     () => import(/* webpackMode: "eager" */ 'whatwg-fetch')
   ),
   defineBootstrapModule(
-    'domrect-polyfill',
-    () => import(/* webpackMode: "eager" */ './domrect-polyfill')
-  ),
-  defineBootstrapModule(
     'json-hooks',
     async () => {
       const module = await import(/* webpackMode: "eager" */ './hooks/json');
@@ -148,7 +144,7 @@ const modules = [
     'video-quality',
     async () => {
       const module = await import(/* webpackMode: "eager" */ './video-quality');
-      await module.installVideoQuality();
+      module.installVideoQuality();
       return module;
     },
     (module: typeof import('./video-quality')) => module.dispose()
@@ -181,7 +177,7 @@ const modules = [
       const module = await import(
         /* webpackMode: "eager" */ './auto-account-select'
       );
-      await module.installAutoAccountSelectFeature();
+      module.installAutoAccountSelectFeature();
       return module;
     },
     (module: typeof import('./auto-account-select')) => module.dispose()
@@ -227,14 +223,12 @@ if (isTrustedRuntimeContext(window)) {
   window.addEventListener('pagehide', handlePageHide, false);
   bootstrapReport = bootstrap.run(modules, bootstrapController?.signal);
   void bootstrapReport.then((report) => {
-    document.dispatchEvent(
-      new CustomEvent('ytafBootstrapComplete', {
-        detail: {
-          loaded: [...report.loaded],
-          failures: report.failures.map(({ name }) => name),
-          aborted: report.aborted
-        }
-      })
-    );
+    const event = document.createEvent('CustomEvent');
+    event.initCustomEvent('ytafBootstrapComplete', false, false, {
+      loaded: [...report.loaded],
+      failures: report.failures.map(({ name }) => name),
+      aborted: report.aborted
+    });
+    document.dispatchEvent(event);
   });
 }

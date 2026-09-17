@@ -1,3 +1,14 @@
+const presentationHidden = new WeakSet<HTMLVideoElement>();
+
+/** Preserve playback identity when our screen-off feature hides presentation. */
+export function setMediaPresentationHidden(
+  video: HTMLVideoElement,
+  hidden: boolean
+): void {
+  if (hidden) presentationHidden.add(video);
+  else presentationHidden.delete(video);
+}
+
 type VideoCandidate = HTMLVideoElement & {
   readonly tagName: string;
   readonly isConnected?: boolean;
@@ -8,6 +19,7 @@ interface CandidateScore {
   readonly visibleArea: number;
   readonly totalArea: number;
   readonly playing: boolean;
+  readonly presentationHidden: boolean;
   readonly order: number;
 }
 
@@ -38,7 +50,9 @@ function getCandidateScore(
   documentRef: Document,
   order: number
 ): CandidateScore | null {
-  if (video.isConnected === false || video.hidden) return null;
+  if (video.isConnected === false) return null;
+  const applicationHidden = presentationHidden.has(video);
+  if (video.hidden) return null;
 
   const inlineStyle = video.style;
   let display = inlineStyle?.display;
@@ -52,10 +66,29 @@ function getCandidateScore(
   }
   if (
     display === 'none' ||
-    visibility === 'hidden' ||
-    visibility === 'collapse'
+    visibility === 'collapse' ||
+    (!applicationHidden && visibility === 'hidden')
   ) {
     return null;
+  }
+
+  // Screen-off owns only the video's visibility. Host-hidden containers still
+  // retire a player and must never remain pinned over its replacement.
+  for (
+    let parent = video.parentElement;
+    parent;
+    parent = parent.parentElement
+  ) {
+    if (parent.hidden) return null;
+    let parentDisplay = parent.style?.display;
+    try {
+      parentDisplay =
+        documentRef.defaultView?.getComputedStyle(parent)?.display ||
+        parentDisplay;
+    } catch {
+      // Inline styles remain available when cross-realm style inspection fails.
+    }
+    if (parentDisplay === 'none') return null;
   }
 
   let rect: DOMRect | DOMRectReadOnly;
@@ -90,12 +123,16 @@ function getCandidateScore(
     video,
     visibleArea: visibleWidth * visibleHeight,
     totalArea,
+    presentationHidden: applicationHidden,
     playing: video.paused === false && video.ended !== true,
     order
   };
 }
 
 function isBetterCandidate(next: CandidateScore, current: CandidateScore) {
+  const nextListening = next.presentationHidden && next.playing;
+  const currentListening = current.presentationHidden && current.playing;
+  if (nextListening !== currentListening) return nextListening;
   if (next.visibleArea !== current.visibleArea) {
     return next.visibleArea > current.visibleArea;
   }
@@ -114,9 +151,7 @@ export class ActiveMediaResolver {
   }
 
   resolveVideo(playerRoot?: ParentNode | null): HTMLVideoElement | null {
-    const rootedVideos = playerRoot ? collectVideos(playerRoot) : [];
-    const candidates =
-      rootedVideos.length > 0 ? rootedVideos : collectVideos(this.#document);
+    const candidates = collectVideos(playerRoot ?? this.#document);
     let selected: CandidateScore | null = null;
 
     for (let index = 0; index < candidates.length; index++) {

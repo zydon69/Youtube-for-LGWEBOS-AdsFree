@@ -119,8 +119,8 @@
   independent second builder.
 - Horizon: must be reviewed before every public release; target milestone is
   the first signed public release.
-- Controls: pinned Node/pnpm versions, frozen lockfile integrity, exact vendored
-  hashes, clean reviewed Git state, QA receipt bound to source/lock/dist,
+- Controls: pinned Node/pnpm versions, frozen lockfile integrity, exact distribution
+  inventory, clean reviewed Git state, QA receipt bound to source/lock/dist,
   deterministic rebuild, SBOM, provenance and externally signed checksums.
 - Exit criterion: two isolated builders starting from the signed tag and empty
   package stores produce byte-identical IPKs and independently signed

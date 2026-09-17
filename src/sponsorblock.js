@@ -11,6 +11,7 @@ import { showNotification } from './core/notifications.js';
 import { resolveActiveVideo } from './core/active-media-resolver.ts';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
 import {
+  SEEK_EPSILON_SECONDS,
   computeSponsorDelayMs,
   decideSponsorSkip,
   findNextSponsorSegment
@@ -27,7 +28,6 @@ const MAX_SCHEDULED_DELAY_MS = 2_147_000_000;
 const SEEK_CONFIRMATION_TIMEOUT_MS = 750;
 const SEEK_RETRY_BASE_DELAY_MS = 500;
 const MAX_SEEK_ATTEMPTS_PER_SEGMENT = 3;
-const SEEK_EPSILON_SECONDS = 0.25;
 const RETRY_BASE_DELAY_MS = 5_000;
 const RETRY_MAX_DELAY_MS = 60_000;
 const MAX_INITIALIZATION_RETRIES = 4;
@@ -71,7 +71,7 @@ function queryProgressBars(root) {
 
 /** @param {ParentNode | null | undefined} playerRoot */
 function findProgressSlider(playerRoot) {
-  const progressBars = queryProgressBars(playerRoot ?? document);
+  const progressBars = queryProgressBars(playerRoot);
   let fallback = null;
   let selected = null;
   let selectedArea = -1;
@@ -100,6 +100,8 @@ export class SponsorBlockHandler {
   /** @type {HTMLVideoElement | null} */
   video = null;
   active = true;
+  videoSource = '';
+  scheduleGeneration = 0;
   /** @type {number | null} */
   nextSkipTimeout = null;
   /** @type {number | null} */
@@ -146,6 +148,7 @@ export class SponsorBlockHandler {
     this.scheduleSkipHandler = () => this.handlePlaybackProgress(false);
     this.forceScheduleSkipHandler = () => this.handlePlaybackProgress(true);
     this.durationChangeHandler = () => {
+      if (!this.validateMedia()) return;
       this.normalizeSegments();
       this.renderOverlay();
       this.scheduleSkip(true);
@@ -238,8 +241,9 @@ export class SponsorBlockHandler {
 
   synchronizeVideo() {
     if (!this.active) return;
+    this.playerManager?.synchronizePlayer();
     const managerVideoID = readManagerVideoID(this.playerManager);
-    if (managerVideoID && managerVideoID !== this.videoID) {
+    if (managerVideoID !== this.videoID) {
       this.detachVideo();
       queueSponsorBlockSynchronization(managerVideoID);
       return;
@@ -251,8 +255,11 @@ export class SponsorBlockHandler {
     } catch (error) {
       console.warn('[sponsorblock] Player root unavailable', error);
     }
-    const nextVideo = resolveActiveVideo(playerRoot);
-    if (nextVideo === this.video) {
+    const nextVideo = playerRoot ? resolveActiveVideo(playerRoot) : null;
+    if (
+      nextVideo === this.video &&
+      (nextVideo?.currentSrc || nextVideo?.src || '') === this.videoSource
+    ) {
       if (nextVideo) this.renderOverlay();
       return;
     }
@@ -260,6 +267,7 @@ export class SponsorBlockHandler {
     this.detachVideo();
     if (!nextVideo) return;
     this.video = nextVideo;
+    this.videoSource = nextVideo.currentSrc || nextVideo.src || '';
     nextVideo.addEventListener('play', this.forceScheduleSkipHandler);
     nextVideo.addEventListener('pause', this.forceScheduleSkipHandler);
     nextVideo.addEventListener('timeupdate', this.scheduleSkipHandler);
@@ -268,7 +276,8 @@ export class SponsorBlockHandler {
     nextVideo.addEventListener('ratechange', this.forceScheduleSkipHandler);
     nextVideo.addEventListener('seeking', this.forceScheduleSkipHandler);
     nextVideo.addEventListener('seeked', this.forceScheduleSkipHandler);
-    nextVideo.addEventListener('emptied', this.forceScheduleSkipHandler);
+    nextVideo.addEventListener('emptied', this.mediaEmptiedHandler);
+    nextVideo.addEventListener('ended', this.forceScheduleSkipHandler);
     this.normalizeSegments();
     this.renderOverlay();
     this.scheduleSkip(true);
@@ -364,6 +373,7 @@ export class SponsorBlockHandler {
   }
 
   clearScheduledSkip() {
+    this.scheduleGeneration++;
     if (this.nextSkipTimeout !== null) {
       window.clearTimeout(this.nextSkipTimeout);
     }
@@ -411,7 +421,7 @@ export class SponsorBlockHandler {
   settlePendingSeek() {
     const pending = this.pendingSeek;
     const video = this.video;
-    if (!pending || !video) return false;
+    if (!pending || !video || !this.validateMedia()) return false;
     const currentTime = video.currentTime;
     if (
       Number.isFinite(currentTime) &&
@@ -426,14 +436,46 @@ export class SponsorBlockHandler {
     return true;
   }
 
+  mediaEmptiedHandler = () => {
+    this.detachVideo();
+    this.queueVideoSync();
+  };
+
+  validateMedia() {
+    if (!this.active || !this.video) return false;
+    const manager = this.playerManager;
+    manager?.synchronizePlayer();
+    const id = readManagerVideoID(manager);
+    if (
+      !this.active ||
+      id !== this.videoID ||
+      !manager ||
+      resolveActiveVideo(manager.player) !== this.video ||
+      (this.video.currentSrc || this.video.src || '') !== this.videoSource
+    ) {
+      this.detachVideo();
+      if (id && id !== this.videoID) queueSponsorBlockSynchronization(id);
+      else this.queueVideoSync();
+      return false;
+    }
+    return true;
+  }
+
   /** @param {boolean} force */
   handlePlaybackProgress(force) {
+    if (!this.validateMedia()) return;
+    if (this.video?.paused || this.video?.ended) {
+      this.clearScheduledSkip();
+      this.clearPendingSeek();
+      return;
+    }
     if (this.settlePendingSeek()) return;
     this.scheduleSkip(force);
   }
 
   /** @param {SponsorSegment} segment @param {unknown} [error] */
   recordSeekFailure(segment, error) {
+    if (!this.validateMedia()) return;
     this.clearPendingSeek();
     const key = this.segmentKey(segment);
     const attempts = (this.seekAttempts.get(key) ?? 0) + 1;
@@ -450,11 +492,10 @@ export class SponsorBlockHandler {
     this.scheduledSegmentKey = key;
     const delay = SEEK_RETRY_BASE_DELAY_MS * 2 ** (attempts - 1);
     this.scheduledDueAt = Date.now() + delay;
+    const generation = this.scheduleGeneration;
     this.nextSkipTimeout = window.setTimeout(() => {
-      this.nextSkipTimeout = null;
-      this.scheduledDueAt = null;
-      this.scheduledSegmentKey = null;
-      this.executeScheduledSkip(segment);
+      if (generation === this.scheduleGeneration)
+        this.executeScheduledSkip(segment);
     }, delay);
   }
 
@@ -463,7 +504,13 @@ export class SponsorBlockHandler {
     this.clearScheduledSkip();
     const key = this.segmentKey(segment);
     const timeoutToken = window.setTimeout(() => {
-      if (this.pendingSeek?.key !== key) return;
+      if (
+        this.pendingSeek?.timeoutToken !== timeoutToken ||
+        !this.validateMedia()
+      )
+        return;
+      this.settlePendingSeek();
+      if (this.pendingSeek?.timeoutToken !== timeoutToken) return;
       this.recordSeekFailure(
         segment,
         new Error('SponsorBlock seek made no observable progress')
@@ -475,10 +522,13 @@ export class SponsorBlockHandler {
   /** @param {boolean} force */
   scheduleSkip(force = false) {
     const video = this.video;
+    if (!this.validateMedia()) return;
     if (
       !this.active ||
       !video ||
       video.paused ||
+      video.ended ||
+      video.seeking ||
       !Number.isFinite(video.currentTime)
     ) {
       this.clearScheduledSkip();
@@ -494,7 +544,8 @@ export class SponsorBlockHandler {
         (candidate) => !this.blockedSegments.has(this.segmentKey(candidate))
       ),
       allowed,
-      video.currentTime
+      video.currentTime,
+      video.duration
     );
     if (!segment) {
       this.clearScheduledSkip();
@@ -525,26 +576,29 @@ export class SponsorBlockHandler {
     this.clearScheduledSkip();
     this.scheduledSegmentKey = segmentKey;
     this.scheduledDueAt = dueAt;
+    const generation = this.scheduleGeneration;
     this.nextSkipTimeout = window.setTimeout(
-      () => this.executeScheduledSkip(segment),
+      () => {
+        if (generation === this.scheduleGeneration)
+          this.executeScheduledSkip(segment);
+      },
       Math.min(delay, MAX_SCHEDULED_DELAY_MS)
     );
   }
 
   /** @param {SponsorSegment} segment */
   executeScheduledSkip(segment) {
-    this.nextSkipTimeout = null;
-    this.scheduledDueAt = null;
-    this.scheduledSegmentKey = null;
+    this.clearScheduledSkip();
     if (this.pendingSeek) return;
     const video = this.video;
-    if (!this.active || !video || video.paused) return;
-    const managerVideoID = readManagerVideoID(this.playerManager);
-    if (managerVideoID && managerVideoID !== this.videoID) {
-      this.detachVideo();
-      queueSponsorBlockSynchronization(managerVideoID);
+    if (
+      !this.validateMedia() ||
+      !video ||
+      video.paused ||
+      video.ended ||
+      video.seeking
+    )
       return;
-    }
     if (!this.categories.includes(segment.category)) {
       this.scheduleSkip(true);
       return;
@@ -560,19 +614,14 @@ export class SponsorBlockHandler {
       return;
     }
 
+    this.awaitSeekConfirmation(segment, decision.target);
     try {
       video.currentTime = decision.target;
     } catch (error) {
       this.recordSeekFailure(segment, error);
       return;
     }
-    if (video.currentTime >= decision.target - SEEK_EPSILON_SECONDS) {
-      this.seekAttempts.delete(this.segmentKey(segment));
-      this.notifySkipped(segment);
-      this.scheduleSkip(true);
-      return;
-    }
-    this.awaitSeekConfirmation(segment, decision.target);
+    this.settlePendingSeek();
   }
 
   removeOverlay() {
@@ -610,7 +659,8 @@ export class SponsorBlockHandler {
       );
       this.video.removeEventListener('seeking', this.forceScheduleSkipHandler);
       this.video.removeEventListener('seeked', this.forceScheduleSkipHandler);
-      this.video.removeEventListener('emptied', this.forceScheduleSkipHandler);
+      this.video.removeEventListener('emptied', this.mediaEmptiedHandler);
+      this.video.removeEventListener('ended', this.forceScheduleSkipHandler);
     }
     this.video = null;
     this.removeOverlay();

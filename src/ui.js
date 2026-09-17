@@ -1,8 +1,8 @@
 /*global __YTAF_VERSION__*/
 import {
-  disposeSpatialNavigationPolyfill,
-  installSpatialNavigationPolyfill
-} from './spatial-navigation-polyfill.js';
+  getFocusableSettings,
+  moveSettingsFocus
+} from './core/settings-navigation.ts';
 import { configAddChangeListener, configRead } from './config.js';
 import './ui.css';
 import {
@@ -10,60 +10,16 @@ import {
   showNotification
 } from './core/notifications.js';
 export { showNotification } from './core/notifications.js';
-import { resolveActiveVideo } from './core/active-media-resolver.ts';
+import {
+  resolveActiveVideo,
+  setMediaPresentationHidden
+} from './core/active-media-resolver.ts';
 import {
   acquireTransactionalOwnership,
   InlineStyleOwner
 } from './core/inline-style-owner.js';
 import { subscribeDOMMutations } from './core/dom-mutations.js';
 import { createSettingsPanel } from './core/settings-panel.js';
-
-/** @type {{ keyMode: string } | null} */
-let spatialNavigation = null;
-/** @type {string | undefined} */
-let previousSpatialKeyModeValue;
-/** @type {PropertyDescriptor | undefined} */
-let previousSpatialKeyModeDescriptor;
-let ownsSpatialKeyMode = false;
-
-function configureSpatialNavigation() {
-  spatialNavigation = window.__spatialNavigation__ ?? null;
-  if (spatialNavigation) {
-    previousSpatialKeyModeValue = spatialNavigation.keyMode;
-    previousSpatialKeyModeDescriptor = Object.getOwnPropertyDescriptor(
-      spatialNavigation,
-      'keyMode'
-    );
-    spatialNavigation.keyMode = 'NONE';
-    ownsSpatialKeyMode = spatialNavigation.keyMode === 'NONE';
-  }
-}
-
-function restoreSpatialNavigation() {
-  if (
-    !ownsSpatialKeyMode ||
-    !spatialNavigation ||
-    spatialNavigation.keyMode !== 'NONE'
-  ) {
-    spatialNavigation = null;
-    return;
-  }
-  try {
-    if (previousSpatialKeyModeDescriptor) {
-      Reflect.set(spatialNavigation, 'keyMode', previousSpatialKeyModeValue);
-      Object.defineProperty(
-        spatialNavigation,
-        'keyMode',
-        previousSpatialKeyModeDescriptor
-      );
-    } else Reflect.deleteProperty(spatialNavigation, 'keyMode');
-    ownsSpatialKeyMode = false;
-  } catch (error) {
-    console.warn('[ui] Unable to restore spatial navigation', error);
-  } finally {
-    spatialNavigation = null;
-  }
-}
 
 /** @type {Record<number, 'left' | 'right' | 'up' | 'down'>} */
 const ARROW_KEY_CODE = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
@@ -148,16 +104,7 @@ function getKeyColor(event) {
 }
 
 function getFocusablePanelElements() {
-  return /** @type {HTMLElement[]} */ (
-    Array.from(
-      optionsPanel.querySelectorAll('input, button, select, [tabindex]')
-    ).filter(
-      (element) =>
-        element instanceof HTMLElement &&
-        !element.hasAttribute('disabled') &&
-        element.getAttribute('aria-hidden') !== 'true'
-    )
-  );
+  return getFocusableSettings(optionsPanel);
 }
 
 /** @type {HTMLElement} */
@@ -213,6 +160,7 @@ function hideModalBackground() {
 /** @param {boolean} [visible] */
 function showOptionsPanel(visible = true) {
   if (disposed) return;
+  if (visible) bindBodyFeatures();
   if (visible && !optionsPanelVisible) {
     focusBeforePanel = document.activeElement;
     optionsPanel.style.display = 'block';
@@ -247,17 +195,9 @@ function handlePanelKeyDown(event) {
   const focusable = getFocusablePanelElements();
   let handled = false;
 
-  if (code in ARROW_KEY_CODE && typeof window.navigate === 'function') {
+  if (code in ARROW_KEY_CODE) {
     const direction = ARROW_KEY_CODE[code];
-    if (direction) window.navigate(direction);
-    window.setTimeout(() => {
-      if (
-        optionsPanelVisible &&
-        !optionsPanel.contains(document.activeElement)
-      ) {
-        (focusable[0] ?? optionsPanel).focus();
-      }
-    }, 0);
+    if (direction) moveSettingsFocus(optionsPanel, direction);
     handled = true;
   } else if (code === 9) {
     const active = document.activeElement;
@@ -341,7 +281,15 @@ function restoreQualityRootClasses() {
 
 function bindBodyFeatures() {
   const body = document.body;
-  if (!body || body === observedBody) return;
+  if (!body) return;
+  if (!body.contains(optionsPanel)) {
+    body.appendChild(optionsPanel);
+    if (optionsPanelVisible) {
+      hideModalBackground();
+      (getFocusablePanelElements()[0] ?? optionsPanel).focus();
+    }
+  }
+  if (body === observedBody) return;
   bodyClassObserver?.disconnect();
   observedBody = body;
   if (!body.contains(optionsPanel)) body.appendChild(optionsPanel);
@@ -364,35 +312,9 @@ function getPlayerRoot(video) {
   return null;
 }
 
-function getScreenHiddenVideo() {
-  const selected = resolveActiveVideo();
-  if (!audioOnlyEnabled || !audioOnlyVideo || selected === audioOnlyVideo) {
-    return selected;
-  }
-  const currentConnected = document.documentElement.contains(audioOnlyVideo);
-  if (!selected) {
-    return currentConnected && audioOnlyVideo.ended !== true
-      ? audioOnlyVideo
-      : null;
-  }
-  const selectedRect = selected.getBoundingClientRect();
-  const currentRect = audioOnlyVideo.getBoundingClientRect();
-  const selectedArea = Math.max(0, selectedRect.width * selectedRect.height);
-  const currentArea = Math.max(0, currentRect.width * currentRect.height);
-  const selectedIsActive =
-    selected.paused === false || selectedArea > currentArea;
-  if (currentConnected && audioOnlyVideo.ended !== true && !selectedIsActive) {
-    return audioOnlyVideo;
-  }
-  return selected;
-}
-
 /** @param {HTMLElement | null} playerRoot @param {string} selector */
 function findAssociatedElement(playerRoot, selector) {
-  const rooted = playerRoot?.querySelectorAll(selector);
-  const candidates = rooted?.length
-    ? rooted
-    : document.querySelectorAll(selector);
+  const candidates = (playerRoot ?? document).querySelectorAll(selector);
   let selected = null;
   let selectedArea = -1;
   for (let index = 0; index < candidates.length; index++) {
@@ -410,6 +332,7 @@ function findAssociatedElement(playerRoot, selector) {
 
 function restoreScreenHiddenStyles() {
   audioOnlyVideoStyles?.restore();
+  if (audioOnlyVideo) setMediaPresentationHidden(audioOnlyVideo, false);
   audioOnlyVideoStyles = null;
   audioOnlyVideo = null;
   audioOnlyOverlayStyles?.restore();
@@ -425,7 +348,7 @@ function applyScreenHiddenState() {
     return true;
   }
 
-  const nextVideo = getScreenHiddenVideo();
+  const nextVideo = resolveActiveVideo();
   const playerRoot = nextVideo ? getPlayerRoot(nextVideo) : null;
   const controls = findAssociatedElement(playerRoot, '[idomkey="controls"]');
   if (!nextVideo || !controls) return false;
@@ -441,6 +364,7 @@ function applyScreenHiddenState() {
 
   if (nextVideo !== audioOnlyVideo) {
     audioOnlyVideoStyles?.restore();
+    if (audioOnlyVideo) setMediaPresentationHidden(audioOnlyVideo, false);
     audioOnlyVideo = nextVideo;
     audioOnlyVideoStyles = new InlineStyleOwner(nextVideo, ['visibility']);
   }
@@ -454,6 +378,7 @@ function applyScreenHiddenState() {
       : null;
   }
 
+  setMediaPresentationHidden(nextVideo, true);
   audioOnlyVideoStyles?.set('visibility', 'hidden');
   audioOnlyOverlayStyles?.set('filter', 'brightness(0)', 'important');
   return true;
@@ -577,8 +502,6 @@ export function installUI() {
   installed = true;
   disposed = false;
   try {
-    installSpatialNavigationPolyfill();
-    configureSpatialNavigation();
     settingsPanel = createSettingsPanel();
     optionsPanel = settingsPanel.element;
     previousOptionsPanelDescriptor = Object.getOwnPropertyDescriptor(
@@ -658,6 +581,4 @@ export function dispose() {
   }
   ownsOptionsPanelGlobal = false;
   previousOptionsPanelDescriptor = undefined;
-  restoreSpatialNavigation();
-  disposeSpatialNavigationPolyfill();
 }

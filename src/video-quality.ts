@@ -48,15 +48,18 @@ async function activateVideoQuality() {
 
   const nextController = new VideoQualityController(
     {
-      getPlayer: () => {
+      read: () => {
+        nextManager.synchronizePlayer();
         const player = nextManager.player;
         if (!isQualityPlayer(player)) {
           throw new Error('YouTube quality capabilities are unavailable');
         }
-        return player;
-      },
-      getVideoID: () => nextManager.currentVideoID,
-      isPreview: () => nextManager.playerMode === PlayerMode.PREVIEW
+        return {
+          player,
+          videoID: nextManager.currentVideoID,
+          preview: nextManager.playerMode === PlayerMode.PREVIEW
+        };
+      }
     },
     { notify: showNotification }
   );
@@ -86,12 +89,16 @@ function deactivateVideoQuality() {
   manager = null;
 }
 
-export async function installVideoQuality() {
+export function installVideoQuality() {
   if (installed) return;
   configAddChangeListener('forceHighResVideo', handleConfigChange);
   installed = true;
   try {
-    if (configRead('forceHighResVideo')) await activateVideoQuality();
+    if (configRead('forceHighResVideo')) {
+      void activateVideoQuality().catch((error) => {
+        console.warn('[video-quality] Feature unavailable', error);
+      });
+    }
   } catch (error) {
     dispose();
     throw error;

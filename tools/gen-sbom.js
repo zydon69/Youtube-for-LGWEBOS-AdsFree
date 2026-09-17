@@ -18,19 +18,14 @@ import {
 } from './package-contract.js';
 
 const REQUIRED_NOTICE_MARKERS = new Map([
+  ['@babel/runtime', ['Babel runtime', 'Sebastian McKenzie']],
   ['@babel/runtime-corejs3', ['runtime-corejs3', 'Sebastian McKenzie']],
   ['core-js-pure', ['core-js-pure', 'Denis Pushkarev']],
   ['regenerator-runtime', ['regenerator-runtime', 'Facebook, Inc.']],
   ['tiny-sha256', ['tiny-sha256', 'Geraint Luff']],
   ['whatwg-fetch', ['whatwg-fetch', 'GitHub, Inc.']],
-  [
-    'Financial Times Polyfill Library DOMRect',
-    ['Financial Times Polyfill Library DOMRect', 'Financial Times']
-  ],
-  [
-    'WICG Spatial Navigation Polyfill',
-    ['WICG Spatial Navigation Polyfill', 'LG Electronics Inc.']
-  ]
+  ['style-loader', ['style-loader', 'JS Foundation']],
+  ['css-loader', ['css-loader', 'JS Foundation']]
 ]);
 
 /** @param {Array<Record<string, any>>} components @param {string} notices */
@@ -49,6 +44,29 @@ export function assertRuntimeNotices(components, notices) {
     }
   }
 }
+/** @param {Map<string, Record<string, any>>} components @param {unknown} inventory */
+export function classifyRuntimeComponents(components, inventory) {
+  if (!Array.isArray(inventory) || inventory.length === 0) {
+    throw new Error('Missing emitted runtime component inventory');
+  }
+  const seen = new Set();
+  for (const entry of inventory) {
+    if (
+      !entry ||
+      typeof entry.name !== 'string' ||
+      typeof entry.version !== 'string'
+    ) {
+      throw new Error('Invalid emitted runtime component');
+    }
+    const ref = npmPurl(entry.name, entry.version);
+    const component = components.get(ref);
+    if (!component || seen.has(ref))
+      throw new Error(`Unknown or duplicate emitted runtime component: ${ref}`);
+    seen.add(ref);
+    component.scope = 'required';
+  }
+}
+
 import { runPinnedPnpm } from './pnpm-cli.js';
 
 /** @param {string[]} args */
@@ -235,69 +253,16 @@ export async function generateSbom(options = {}) {
     }
   }
 
-  collectDependencies(applicationRef, dependencyTree.dependencies, 'required');
+  collectDependencies(applicationRef, dependencyTree.dependencies, 'excluded');
   collectDependencies(
     applicationRef,
     dependencyTree.devDependencies,
     'excluded'
   );
-
-  for (const vendor of [
-    {
-      repository: 'WICG/spatial-navigation',
-      name: 'WICG Spatial Navigation Polyfill',
-      upstreamCommit: '183f0146b6741007e46fa64ab0950447defdf8af',
-      path: 'src/spatial-navigation-polyfill.js'
-    },
-    {
-      repository: 'Financial-Times/polyfill-library',
-      name: 'Financial Times Polyfill Library DOMRect',
-      upstreamCommit: 'c25c30e4463bef60fba1213ecb697f3e3f253d7b',
-      path: 'src/domrect-polyfill.js'
-    }
-  ]) {
-    // The two bounded vendored files are hashed sequentially for deterministic IO.
-    // eslint-disable-next-line no-await-in-loop
-    const source = await readFile(join(PROJECT_ROOT, vendor.path));
-    const localHash = sha256(source);
-    const ancestorPurl = `pkg:github/${vendor.repository}@${vendor.upstreamCommit}`;
-    const localRef = `urn:ytaf:vendored:${encodeURIComponent(vendor.path)}:sha256:${localHash}`;
-    components.set(localRef, {
-      type: 'library',
-      'bom-ref': localRef,
-      name: vendor.name,
-      version: `${vendor.upstreamCommit}+ytaf.${localHash.slice(0, 12)}`,
-      scope: 'required',
-      licenses: [{ license: { id: 'MIT' } }],
-      hashes: [{ alg: 'SHA-256', content: localHash }],
-      pedigree: {
-        ancestors: [
-          {
-            type: 'library',
-            name: vendor.name,
-            version: vendor.upstreamCommit,
-            purl: ancestorPurl
-          }
-        ]
-      },
-      externalReferences: [
-        {
-          type: 'vcs',
-          url: `https://github.com/${vendor.repository}/tree/${vendor.upstreamCommit}`
-        }
-      ],
-      properties: [
-        { name: 'ytaf:vendored-path', value: vendor.path },
-        { name: 'ytaf:locally-modified', value: 'true' },
-        {
-          name: 'ytaf:patch-documentation',
-          value: 'docs/vendor-patches.md'
-        }
-      ]
-    });
-    dependencyGraph.get(applicationRef)?.add(localRef);
-    dependencyGraph.set(localRef, new Set());
-  }
+  const runtimeInventory = JSON.parse(
+    await readFile(join(distDirectory, 'runtime-components.json'), 'utf8')
+  );
+  classifyRuntimeComponents(components, runtimeInventory);
 
   const sortedComponents = [...components.values()].sort((left, right) =>
     left['bom-ref'].localeCompare(right['bom-ref'])

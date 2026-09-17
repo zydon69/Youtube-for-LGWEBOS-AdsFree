@@ -46,9 +46,7 @@ test('resolveCommand handles ambiguity, isolates hooks and caps private targets'
   const previousError = console.error;
   console.error = () => undefined;
   try {
-    const registry = await ResolveCommandRegistry.getInstance({
-      timeoutMs: 100
-    });
+    const registry = ResolveCommandRegistry.getDeferredInstance();
     registry.setHook('failing', () => {
       throw new Error('feature failure');
     });
@@ -102,9 +100,7 @@ test('resolveCommand destruction tolerates a host setter that became unwritable'
   globalThis.window = createRegistryWindow({ constructor });
 
   try {
-    const registry = await ResolveCommandRegistry.getInstance({
-      timeoutMs: 100
-    });
+    const registry = ResolveCommandRegistry.getDeferredInstance();
     const wrapper = instance.resolveCommand;
     Object.defineProperty(instance, 'resolveCommand', {
       configurable: true,
@@ -143,11 +139,10 @@ test('resolveCommand binding rolls back a setter-altered assignment', async () =
   console.warn = () => undefined;
 
   try {
-    await assert.rejects(
-      ResolveCommandRegistry.getInstance({ timeoutMs: 100 }),
-      /No writable resolveCommand target/
-    );
+    const registry = ResolveCommandRegistry.getDeferredInstance();
     assert.equal(instance.resolveCommand, original);
+    registry.synchronizeTargets();
+    assert.notEqual(instance.resolveCommand, original);
   } finally {
     ResolveCommandRegistry.destroyInstance();
     console.warn = previousWarn;
@@ -169,8 +164,8 @@ test('resolveCommand construction rolls back when scheduling fails', async () =>
   };
 
   try {
-    await assert.rejects(
-      ResolveCommandRegistry.getInstance({ timeoutMs: 100 }),
+    assert.throws(
+      () => ResolveCommandRegistry.getDeferredInstance(),
       /scheduler unavailable/
     );
     assert.equal(instance.resolveCommand, original);
@@ -195,9 +190,7 @@ test('resolveCommand bounds accidental hook expansion', async () => {
   console.error = () => undefined;
 
   try {
-    const registry = await ResolveCommandRegistry.getInstance({
-      timeoutMs: 100
-    });
+    const registry = ResolveCommandRegistry.getDeferredInstance();
     registry.setHook('expand', () =>
       Array.from({ length: 100 }, (_, index) => ({ expanded: index }))
     );

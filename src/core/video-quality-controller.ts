@@ -9,10 +9,14 @@ export interface QualityPlayer {
   setPlaybackQualityRange(min: string, max: string): void;
 }
 
+export interface QualitySnapshot {
+  player: QualityPlayer;
+  videoID: string | null;
+  preview: boolean;
+}
+
 export interface QualityHost {
-  getPlayer(): QualityPlayer;
-  getVideoID(): string | null;
-  isPreview(): boolean;
+  read(): QualitySnapshot;
 }
 
 export function isQualityPlayer(value: unknown): value is QualityPlayer {
@@ -70,6 +74,19 @@ export function getMaxQualityLabel(player: QualityPlayer) {
   return selected;
 }
 
+interface QualityOperation {
+  intervalToken?: unknown;
+  timeoutToken?: unknown;
+  retryToken?: unknown;
+}
+
+interface QualityOwnership {
+  player: QualityPlayer;
+  confirmed: boolean;
+  expectedQuality?: string;
+}
+
+/** One operation owns its timers and one snapshot identifies its target. */
 export class VideoQualityController {
   readonly #host: QualityHost;
   readonly #scheduler: QualityScheduler;
@@ -79,22 +96,11 @@ export class VideoQualityController {
   readonly #settleTimeoutMs: number;
   readonly #retryDelayMs: number;
   readonly #maxAttempts: number;
-
   #enabled = false;
   #disposed = false;
-  #generation = 0;
-  #appliedVideoID: string | null = null;
-  #pendingVideoID: string | null = null;
-  #intervalToken: unknown;
-  #timeoutToken: unknown;
-  #retryToken: unknown;
-  #ownership:
-    | {
-        player: QualityPlayer;
-        confirmed: boolean;
-        expectedQuality?: string;
-      }
-    | undefined;
+  #operation: QualityOperation | null = null;
+  #applied: QualitySnapshot | null = null;
+  #ownership: QualityOwnership | null = null;
 
   constructor(host: QualityHost, options: ControllerOptions = {}) {
     this.#host = host;
@@ -106,18 +112,20 @@ export class VideoQualityController {
     this.#settleTimeoutMs = options.settleTimeoutMs ?? 3_000;
     this.#retryDelayMs = options.retryDelayMs ?? 250;
     this.#maxAttempts = options.maxAttempts ?? 3;
-
     for (const [name, value] of [
       ['pollIntervalMs', this.#pollIntervalMs],
       ['settleTimeoutMs', this.#settleTimeoutMs],
       ['retryDelayMs', this.#retryDelayMs],
       ['maxAttempts', this.#maxAttempts]
     ] as const) {
-      if (!Number.isFinite(value) || value <= 0) {
-        throw new RangeError(`${name} must be a finite positive number`);
-      }
-      if (name === 'maxAttempts' && !Number.isInteger(value)) {
-        throw new RangeError('maxAttempts must be an integer');
+      if (
+        !Number.isFinite(value) ||
+        value <= 0 ||
+        (name === 'maxAttempts' && !Number.isInteger(value))
+      ) {
+        throw new RangeError(
+          `${name} must be a finite positive ${name === 'maxAttempts' ? 'integer' : 'number'}`
+        );
       }
     }
   }
@@ -125,210 +133,165 @@ export class VideoQualityController {
   setEnabled(enabled: boolean) {
     if (this.#disposed || enabled === this.#enabled) return;
     this.#enabled = enabled;
-    if (enabled) {
-      this.#resetOperation();
-      this.#tryApply(1);
-    } else {
-      this.#generation++;
-      this.#appliedVideoID = null;
-      this.#pendingVideoID = null;
-      this.#clearTimers();
-      this.#restoreAutomaticQuality();
-    }
+    this.#applied = null;
+    this.#cancelOperation();
+    if (enabled) this.#start();
+    else this.#restoreAutomaticQuality();
   }
 
   handleNewVideo() {
     if (this.#disposed) return;
-    try {
-      if (this.#host.isPreview()) {
-        this.#generation++;
-        this.#appliedVideoID = null;
-        this.#pendingVideoID = null;
-        this.#clearTimers();
-        this.#restoreAutomaticQuality();
-        return;
-      }
-    } catch (error) {
-      this.#warn('[video-quality] Unable to inspect player mode', error);
-    }
-    this.#resetOperation();
-    if (this.#enabled) this.#tryApply(1);
+    this.#applied = null;
+    this.#cancelOperation();
+    this.#start();
   }
 
   handlePlaybackStart() {
-    if (this.#disposed || !this.#enabled) return;
-    this.#tryApply(1);
+    this.#start();
   }
 
   dispose() {
     if (this.#disposed) return;
-    if (this.#enabled) this.setEnabled(false);
     this.#disposed = true;
     this.#enabled = false;
-    this.#resetOperation();
+    this.#applied = null;
+    this.#cancelOperation();
+    this.#restoreAutomaticQuality();
   }
 
-  #resetOperation() {
-    this.#generation++;
-    this.#appliedVideoID = null;
-    this.#pendingVideoID = null;
-    this.#clearTimers();
+  #isActive(operation: QualityOperation) {
+    return !this.#disposed && this.#enabled && this.#operation === operation;
   }
 
-  #clearTimers() {
-    if (this.#intervalToken !== undefined) {
-      this.#scheduler.clearInterval(this.#intervalToken);
-    }
-    if (this.#timeoutToken !== undefined) {
-      this.#scheduler.clearTimeout(this.#timeoutToken);
-    }
-    if (this.#retryToken !== undefined) {
-      this.#scheduler.clearTimeout(this.#retryToken);
-    }
-    this.#intervalToken = undefined;
-    this.#timeoutToken = undefined;
-    this.#retryToken = undefined;
+  #finish(operation: QualityOperation) {
+    // A callback delivered after cancellation owns only its old timers.
+    if (operation.intervalToken !== undefined)
+      this.#scheduler.clearInterval(operation.intervalToken);
+    if (operation.timeoutToken !== undefined)
+      this.#scheduler.clearTimeout(operation.timeoutToken);
+    if (operation.retryToken !== undefined)
+      this.#scheduler.clearTimeout(operation.retryToken);
+    delete operation.intervalToken;
+    delete operation.timeoutToken;
+    delete operation.retryToken;
+    if (this.#operation === operation) this.#operation = null;
   }
 
-  #tryApply(attempt: number) {
-    if (!this.#enabled || this.#disposed) return;
-    if (this.#retryToken !== undefined) {
-      this.#scheduler.clearTimeout(this.#retryToken);
-      this.#retryToken = undefined;
-    }
+  #cancelOperation() {
+    const previous = this.#operation;
+    this.#operation = null;
+    if (previous) this.#finish(previous);
+  }
 
-    const generation = this.#generation;
-    let player: QualityPlayer;
-    let videoID: string | null;
-    let previousQuality: string;
-    let maxQuality: string | undefined;
+  #start() {
+    if (this.#disposed || !this.#enabled || this.#operation) return;
+    const operation: QualityOperation = {};
+    this.#operation = operation;
+    this.#attempt(operation, 1);
+  }
+
+  #sameTarget(left: QualitySnapshot, right: QualitySnapshot) {
+    return (
+      left.player === right.player &&
+      left.videoID === right.videoID &&
+      left.preview === right.preview
+    );
+  }
+
+  #attempt(operation: QualityOperation, attempt: number) {
+    if (!this.#isActive(operation)) return;
+    let snapshot: QualitySnapshot;
+    let ownership: QualityOwnership;
     try {
-      if (this.#host.isPreview()) return;
-      videoID = this.#host.getVideoID();
-      if (
-        !videoID ||
-        this.#appliedVideoID === videoID ||
-        this.#pendingVideoID === videoID
-      ) {
+      snapshot = this.#host.read();
+      // Reading the host can synchronously announce another video or dispose us.
+      if (!this.#isActive(operation)) return;
+      if (snapshot.preview || !snapshot.videoID) {
+        this.#applied = null;
+        this.#finish(operation);
+        if (snapshot.preview) this.#restoreAutomaticQuality();
         return;
       }
-      player = this.#host.getPlayer();
-      if (this.#ownership && this.#ownership.player !== player) {
+      if (this.#applied && this.#sameTarget(this.#applied, snapshot)) {
+        this.#finish(operation);
+        return;
+      }
+      if (this.#ownership && this.#ownership.player !== snapshot.player) {
         this.#restoreAutomaticQuality();
+        if (!this.#isActive(operation)) return;
       }
-      previousQuality = player.getPlaybackQualityLabel();
-      maxQuality = getMaxQualityLabel(player);
-      if (previousQuality !== '' && previousQuality === maxQuality) {
-        this.#appliedVideoID = videoID;
-        this.#notifySelection(player);
-        return;
-      }
-      player.setPlaybackQualityRange('highres', 'highres');
+      ownership = { player: snapshot.player, confirmed: false };
+      // Claim the write before calling an API that can dispatch synchronous events.
+      // Even a setter that throws after writing must be releasable on shutdown.
+      this.#ownership = ownership;
+      snapshot.player.setPlaybackQualityRange('highres', 'highres');
+      if (!this.#isActive(operation)) return;
     } catch (error) {
+      if (!this.#isActive(operation)) return;
       this.#warn('[video-quality] Unable to force high resolution', error);
+      if (!this.#isActive(operation)) return;
       if (attempt < this.#maxAttempts) {
-        this.#retryToken = this.#scheduler.setTimeout(() => {
-          this.#retryToken = undefined;
-          if (generation === this.#generation) this.#tryApply(attempt + 1);
+        operation.retryToken = this.#scheduler.setTimeout(() => {
+          delete operation.retryToken;
+          this.#attempt(operation, attempt + 1);
         }, this.#retryDelayMs);
-      }
+      } else this.#finish(operation);
       return;
     }
 
-    this.#pendingVideoID = videoID;
-    this.#ownership = {
-      player,
-      confirmed: false
+    const stillCurrent = () => {
+      if (!this.#isActive(operation)) return false;
+      const current = this.#host.read();
+      return this.#isActive(operation) && this.#sameTarget(snapshot, current);
     };
 
-    const isCurrentOperation = () => {
+    operation.intervalToken = this.#scheduler.setInterval(() => {
       try {
-        return (
-          !this.#disposed &&
-          this.#enabled &&
-          generation === this.#generation &&
-          this.#host.getVideoID() === videoID &&
-          this.#host.getPlayer() === player
-        );
-      } catch {
-        return false;
-      }
-    };
-
-    this.#intervalToken = this.#scheduler.setInterval(() => {
-      if (!isCurrentOperation()) {
-        this.#pendingVideoID = null;
-        this.#clearTimers();
-        return;
-      }
-      try {
-        const currentQuality = player.getPlaybackQualityLabel();
-        const currentMaximum = getMaxQualityLabel(player);
-        if (
-          currentQuality !== '' &&
-          currentMaximum !== undefined &&
-          currentQuality === currentMaximum
-        ) {
-          if (this.#ownership?.player === player) {
-            this.#ownership.confirmed = true;
-            this.#ownership.expectedQuality = currentMaximum;
+        if (!stillCurrent()) {
+          this.#finish(operation);
+          return;
+        }
+        const selected = snapshot.player.getPlaybackQualityLabel();
+        const maximum = getMaxQualityLabel(snapshot.player);
+        if (!stillCurrent()) {
+          this.#finish(operation);
+          return;
+        }
+        if (selected !== '' && maximum !== undefined && selected === maximum) {
+          if (this.#ownership === ownership) {
+            ownership.confirmed = true;
+            ownership.expectedQuality = maximum;
           }
-          this.#appliedVideoID = videoID;
-          this.#pendingVideoID = null;
-          this.#clearTimers();
-          this.#notifySelection(player);
+          this.#applied = snapshot;
+          this.#finish(operation);
+          this.#notify(`${selected} selected (Max ${maximum})`, 3_000);
         }
       } catch (error) {
-        this.#pendingVideoID = null;
-        this.#clearTimers();
-        this.#warn('[video-quality] Quality polling failed', error);
+        this.#finish(operation);
+        this.#warn('[video-quality] Quality confirmation failed', error);
       }
     }, this.#pollIntervalMs);
-
-    this.#timeoutToken = this.#scheduler.setTimeout(() => {
-      this.#timeoutToken = undefined;
-      if (!isCurrentOperation()) {
-        this.#pendingVideoID = null;
-        this.#clearTimers();
-        return;
-      }
-      this.#clearTimers();
-      this.#pendingVideoID = null;
+    operation.timeoutToken = this.#scheduler.setTimeout(() => {
+      delete operation.timeoutToken;
+      if (!this.#isActive(operation)) return;
+      this.#finish(operation);
       this.#warn(
         '[video-quality] High-resolution selection was not confirmed before timeout'
       );
     }, this.#settleTimeoutMs);
   }
 
-  #notifySelection(player: QualityPlayer) {
-    if (!this.#enabled || this.#disposed) return;
-    try {
-      const selected = player.getPlaybackQualityLabel();
-      const max = getMaxQualityLabel(player);
-      this.#notify(
-        `${selected || 'Unknown'} selected (Max ${max || 'Unknown'})`,
-        3_000
-      );
-    } catch (error) {
-      this.#warn('[video-quality] Unable to read selected quality', error);
-    }
-  }
-
   #restoreAutomaticQuality() {
     const ownership = this.#ownership;
-    this.#ownership = undefined;
+    this.#ownership = null;
     if (!ownership) return;
-
     try {
-      const selected = ownership.player.getPlaybackQualityLabel();
-      // Before confirmation, our last known operation is still the explicit
-      // range write, so release it. After confirmation, preserve a subsequent
-      // host/user selection that differs from the value we confirmed.
-      const stillOwned =
+      // Preserve a later external selection. Every new video's explicit write
+      // has its own confirmation, so a changed maximum is never stale ownership.
+      if (
         !ownership.confirmed ||
-        (ownership.expectedQuality !== undefined &&
-          selected === ownership.expectedQuality);
-      if (stillOwned) {
+        ownership.player.getPlaybackQualityLabel() === ownership.expectedQuality
+      ) {
         ownership.player.setPlaybackQualityRange('auto', 'auto');
       }
     } catch (error) {

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { pollUntil } from '../src/core/poll.js';
-import { waitForChildAdd } from '../src/utils.js';
 
 test('polling is bounded and backs off', async () => {
   let calls = 0;
@@ -41,38 +40,4 @@ test('polling rejects invalid bounds and probe failures', async () => {
     }),
     /probe failed/
   );
-});
-
-test('DOM waiting finds matches nested in an added subtree', async (context) => {
-  const previousObserver = globalThis.MutationObserver;
-  let callback;
-  let disconnected = false;
-
-  globalThis.MutationObserver = class {
-    constructor(observerCallback) {
-      callback = observerCallback;
-    }
-
-    observe() {}
-
-    disconnect() {
-      disconnected = true;
-    }
-  };
-  context.after(() => {
-    globalThis.MutationObserver = previousObserver;
-  });
-
-  const parent = { childNodes: [] };
-  const target = { childNodes: [], matchesAuditTarget: true };
-  const wrapper = { childNodes: [target] };
-  const pending = waitForChildAdd(
-    parent,
-    (node) => node.matchesAuditTarget === true,
-    { timeoutMs: 100 }
-  );
-
-  callback([{ type: 'childList', addedNodes: [wrapper] }]);
-  assert.equal(await pending, target);
-  assert.equal(disconnected, true);
 });

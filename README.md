@@ -111,6 +111,13 @@ luna-send-pub -n 1 'luna://com.webos.service.eim/deleteDevice' '{"appId":"youtub
    pnpm install --frozen-lockfile
    ```
 
+### Debugging a local build
+
+`pnpm build:dev` generates unminified ES5 bundles with external source maps and
+an explicit development fingerprint. These debug assets are not package inputs;
+`pnpm package:dev` runs QA and packages the production build from the current
+working tree, with development provenance.
+
 ### Building an IPK
 
 ```sh
@@ -123,8 +130,8 @@ Playwright browser tests, ES5 compatibility validation and the dependency
 audit. Packaging stops on any failure.
 
 Coverage is collected with `--all` across every first-party JavaScript and
-TypeScript runtime file. Only the two separately hashed and regression-tested
-vendored polyfills are excluded; the enforced floors are 70% statements/lines,
+TypeScript runtime file. Declaration-only modules are excluded; all executable runtime modules share
+the same coverage policy. The enforced floors are 70% statements/lines,
 70% branches and 85% functions. These are baseline regression guards, not a
 claim that the remaining integration-heavy runtime is fully tested.
 

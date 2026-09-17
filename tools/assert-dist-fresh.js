@@ -13,7 +13,7 @@ try {
     cause: error
   });
 }
-const current = await currentDistFingerprint();
+const current = await currentDistFingerprint(recorded.development === true);
 assert.deepEqual(
   recorded,
   current,

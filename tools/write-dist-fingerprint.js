@@ -10,5 +10,5 @@ import {
 await mkdir(dirname(DIST_FINGERPRINT_PATH), { recursive: true });
 await writeFileAtomic(
   DIST_FINGERPRINT_PATH,
-  `${JSON.stringify(await currentDistFingerprint(), null, 2)}\n`
+  `${JSON.stringify(await currentDistFingerprint(process.argv.includes('--dev')), null, 2)}\n`
 );

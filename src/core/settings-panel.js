@@ -37,7 +37,8 @@ function createConfigCheckbox(key, disposers, { describedBy } = {}) {
   );
 
   const label = document.createElement('label');
-  label.append(input, document.createTextNode(`\u00a0${configGetDesc(key)}`));
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(`\u00a0${configGetDesc(key)}`));
   return label;
 }
 

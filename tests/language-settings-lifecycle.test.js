@@ -41,7 +41,8 @@ test('language setting interception preserves siblings and is removable', async 
   try {
     languageFix = await import('../src/lang-settings-fix.ts');
     appAPI = await import('../src/app_api/index.ts');
-    await languageFix.installLanguageSettingsFix();
+    languageFix.installLanguageSettingsFix();
+    assert.doesNotThrow(() => languageFix.installLanguageSettingsFix());
     await waitForWrapper(instance, originalResolveCommand);
     assert.notEqual(instance.resolveCommand, originalResolveCommand);
 
@@ -146,6 +147,15 @@ test('language setting interception preserves siblings and is removable', async 
     instance.resolveCommand(untouched);
     assert.equal(nativeCalls.length, 1);
     assert.equal(nativeCalls[0].payload, untouched);
+
+    languageFix.installLanguageSettingsFix();
+    nativeCalls.length = 0;
+    instance.resolveCommand(untouched);
+    assert.deepEqual(
+      nativeCalls.map((call) => call.payload),
+      [{ signalAction: { signal: 'RELOAD_PAGE' } }]
+    );
+    assert.match(browser.document.cookie, /hl=it/);
   } finally {
     languageFix?.dispose();
     appAPI?.dispose();

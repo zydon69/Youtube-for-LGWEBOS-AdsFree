@@ -1,12 +1,15 @@
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
   DIST_DIRECTORY,
   EXPECTED_APP_FILES,
+  EXPECTED_DEVELOPMENT_FILES,
   PROJECT_ROOT,
   getBuildProvenance,
-  hashDirectory
+  hashDirectory,
+  listRelativeFiles
 } from './package-contract.js';
 
 export const DIST_FINGERPRINT_PATH = join(
@@ -16,11 +19,26 @@ export const DIST_FINGERPRINT_PATH = join(
   'ytaf-dist-fingerprint.json'
 );
 
-export async function currentDistFingerprint() {
+/** @param {string} directory @param {boolean} development */
+export async function hashDistDirectory(directory, development) {
+  const expected = development
+    ? EXPECTED_DEVELOPMENT_FILES
+    : EXPECTED_APP_FILES;
+  assert.deepEqual(
+    await listRelativeFiles(directory),
+    [...expected].sort(),
+    'Unexpected distribution file tree'
+  );
+  return hashDirectory(directory, expected);
+}
+
+/** @param {boolean} [development] */
+export async function currentDistFingerprint(development = false) {
   const provenance = await getBuildProvenance('development');
   return {
+    development,
     sourceTreeSha256: provenance.sourceTreeSha256,
-    distTreeSha256: await hashDirectory(DIST_DIRECTORY, EXPECTED_APP_FILES)
+    distTreeSha256: await hashDistDirectory(DIST_DIRECTORY, development)
   };
 }
 

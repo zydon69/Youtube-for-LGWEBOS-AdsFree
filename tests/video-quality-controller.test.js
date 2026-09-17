@@ -73,9 +73,7 @@ function createHarness(player = createPlayer()) {
   const state = { player, videoID: 'video-1', preview: false };
   const controller = new VideoQualityController(
     {
-      getPlayer: () => state.player,
-      getVideoID: () => state.videoID,
-      isPreview: () => state.preview
+      read: () => ({ ...state })
     },
     {
       scheduler,
@@ -233,4 +231,66 @@ test('quality controller disposal is idempotent and releases owned state', () =>
   ]);
   assert.equal(harness.scheduler.intervals.size, 0);
   assert.equal(harness.scheduler.timeouts.size, 0);
+});
+
+test('enabling at the automatic maximum still acquires a forced range', () => {
+  const player = createPlayer('4K');
+  const { controller, scheduler } = createHarness(player);
+  controller.setEnabled(true);
+  assert.deepEqual(player.rangeCalls, [['highres', 'highres']]);
+  scheduler.runIntervals();
+  controller.setEnabled(false);
+  assert.deepEqual(player.rangeCalls.at(-1), ['auto', 'auto']);
+});
+
+test('a lower maximum on the next video is released when forcing is disabled', () => {
+  const player = createPlayer();
+  const { controller, scheduler, state } = createHarness(player);
+  controller.setEnabled(true);
+  player.selectedQuality = '4K';
+  scheduler.runIntervals();
+  state.videoID = 'video-2';
+  player.getAvailableQualityData = () => [
+    { isPlayable: true, qualityLabel: '1080p' }
+  ];
+  player.selectedQuality = '1080p';
+  controller.handleNewVideo();
+  scheduler.runIntervals();
+  controller.setEnabled(false);
+  assert.deepEqual(player.rangeCalls, [
+    ['highres', 'highres'],
+    ['highres', 'highres'],
+    ['auto', 'auto']
+  ]);
+});
+
+test('a stale quality callback cannot cancel the next video operation', () => {
+  const player = createPlayer();
+  const { controller, scheduler, state, notifications } = createHarness(player);
+  controller.setEnabled(true);
+  const oldPoll = [...scheduler.intervals.values()][0];
+  state.videoID = 'video-2';
+  controller.handleNewVideo();
+  oldPoll();
+  assert.equal(scheduler.intervals.size, 1);
+  player.selectedQuality = '4K';
+  scheduler.runIntervals();
+  assert.equal(notifications.length, 1);
+  controller.dispose();
+  assert.equal(scheduler.intervals.size + scheduler.timeouts.size, 0);
+});
+
+test('disabling synchronously during a range write leaves no owned range or timers', () => {
+  const player = createPlayer();
+  const { controller, scheduler } = createHarness(player);
+  player.setPlaybackQualityRange = (...args) => {
+    player.rangeCalls.push(args);
+    if (args[0] === 'highres') controller.setEnabled(false);
+  };
+  controller.setEnabled(true);
+  assert.deepEqual(player.rangeCalls, [
+    ['highres', 'highres'],
+    ['auto', 'auto']
+  ]);
+  assert.equal(scheduler.intervals.size + scheduler.timeouts.size, 0);
 });

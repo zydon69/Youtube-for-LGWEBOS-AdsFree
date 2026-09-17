@@ -2,9 +2,9 @@
  * @template T
  * @param {() => T | null | undefined | false} probe
  * @param {{ signal?: AbortSignal, timeoutMs?: number, initialDelayMs?: number, maxDelayMs?: number, scheduler?: { setTimeout: typeof setTimeout, clearTimeout: typeof clearTimeout } }} [options]
- * @returns {Promise<T>}
+ * @returns {{ promise: Promise<T>, cancel: () => void }}
  */
-export function pollUntil(
+export function startPolling(
   probe,
   {
     signal,
@@ -29,7 +29,9 @@ export function pollUntil(
     throw new RangeError('maxDelayMs must be greater than initialDelayMs');
   }
 
-  return new Promise((resolve, reject) => {
+  let cancel = () => {};
+  /** @type {Promise<T>} */
+  const promise = new Promise((resolve, reject) => {
     const startedAt = Date.now();
     let delayMs = initialDelayMs;
     /** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -63,7 +65,10 @@ export function pollUntil(
       fail(error);
     };
 
+    cancel = abort;
+
     const poll = () => {
+      if (settled) return;
       let value;
       try {
         value = probe();
@@ -71,6 +76,8 @@ export function pollUntil(
         fail(error);
         return;
       }
+
+      if (settled) return;
 
       if (value !== null && value !== undefined && value !== false) {
         succeed(value);
@@ -82,8 +89,15 @@ export function pollUntil(
         return;
       }
 
-      timer = scheduler.setTimeout(poll, delayMs);
-      delayMs = Math.min(Math.ceil(delayMs * 1.5), maxDelayMs);
+      try {
+        timer = scheduler.setTimeout(
+          poll,
+          Math.min(delayMs, timeoutMs - (Date.now() - startedAt))
+        );
+        delayMs = Math.min(Math.ceil(delayMs * 1.5), maxDelayMs);
+      } catch (error) {
+        fail(error);
+      }
     };
 
     if (signal?.aborted) {
@@ -94,4 +108,16 @@ export function pollUntil(
     signal?.addEventListener('abort', abort, { once: true });
     poll();
   });
+  return { promise, cancel };
+}
+
+/**
+ * Promise-only adapter for callers that use an AbortSignal or a timeout.
+ * @template T
+ * @param {() => T | null | undefined | false} probe
+ * @param {Parameters<typeof startPolling>[1]} [options]
+ * @returns {Promise<T>}
+ */
+export function pollUntil(probe, options) {
+  return startPolling(probe, options).promise;
 }

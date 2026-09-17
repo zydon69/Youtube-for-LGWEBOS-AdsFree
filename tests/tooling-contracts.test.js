@@ -1,10 +1,21 @@
+import { hashDistDirectory } from '../tools/dist-fingerprint.js';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import {
+  EXPECTED_APP_FILES,
+  EXPECTED_DEVELOPMENT_FILES,
   APP_ID,
   APP_TITLE,
   artifactNames,
@@ -19,7 +30,10 @@ import {
   parseBuildMode
 } from '../tools/package-contract.js';
 import { runPinnedPnpm } from '../tools/pnpm-cli.js';
-import { assertRuntimeNotices } from '../tools/gen-sbom.js';
+import {
+  assertRuntimeNotices,
+  classifyRuntimeComponents
+} from '../tools/gen-sbom.js';
 import {
   inspectJavaScript,
   inspectNetworkText,
@@ -239,5 +253,129 @@ test('tooling invokes the pinned pnpm independently of PATH order', () => {
     );
   } finally {
     process.env.PATH = previousPath;
+  }
+});
+
+test('QA wrapper propagates child failures and never succeeds after interruption', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'ytaf-pnpm-status-'));
+  const cli = join(directory, 'pnpm.cjs');
+  try {
+    for (const [name, source, expected] of [
+      ['successful check', 'process.exit(0)', 0],
+      ['failed check', 'process.exit(7)', 7],
+      ['terminated check', "process.kill(process.pid, 'SIGTERM')", 1]
+    ]) {
+      // Each subprocess is isolated and finishes before rewriting its fixture.
+      // eslint-disable-next-line no-await-in-loop
+      await writeFile(cli, source);
+      const result = spawnSync(process.execPath, ['tools/run-pnpm.js'], {
+        encoding: 'utf8',
+        env: { ...process.env, npm_execpath: cli }
+      });
+      assert.equal(result.status, expected, name);
+    }
+    const missing = spawnSync(process.execPath, ['tools/run-pnpm.js'], {
+      encoding: 'utf8',
+      env: { ...process.env, npm_execpath: join(directory, 'missing-pnpm.cjs') }
+    });
+    assert.notEqual(missing.status, 0);
+    const unavailable = spawnSync(process.execPath, ['tools/run-pnpm.js'], {
+      encoding: 'utf8',
+      env: { ...process.env, npm_execpath: '' }
+    });
+    assert.equal(unavailable.status, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SBOM scopes follow emitted modules, including injected loader runtimes', async () => {
+  const components = new Map([
+    ['pkg:npm/style-loader@4.0.0', { name: 'style-loader', scope: 'excluded' }],
+    ['pkg:npm/css-loader@7.1.4', { name: 'css-loader', scope: 'excluded' }],
+    ['pkg:npm/build-only@1.0.0', { name: 'build-only', scope: 'excluded' }]
+  ]);
+  classifyRuntimeComponents(components, [
+    { name: 'style-loader', version: '4.0.0' },
+    { name: 'css-loader', version: '7.1.4' }
+  ]);
+  assert.equal(components.get('pkg:npm/style-loader@4.0.0').scope, 'required');
+  assert.equal(components.get('pkg:npm/css-loader@7.1.4').scope, 'required');
+  assert.equal(components.get('pkg:npm/build-only@1.0.0').scope, 'excluded');
+  const notices = await readFile(
+    new URL('../THIRD_PARTY_NOTICES.md', import.meta.url),
+    'utf8'
+  );
+  assert.doesNotThrow(() =>
+    assertRuntimeNotices([...components.values()], notices)
+  );
+  assert.throws(
+    () =>
+      assertRuntimeNotices(
+        [...components.values()],
+        notices.replace('css-loader', 'removed')
+      ),
+    /incomplete/
+  );
+  for (const invalid of [
+    null,
+    [],
+    [{}],
+    [{ name: 'unknown', version: '1' }],
+    [
+      { name: 'style-loader', version: '4.0.0' },
+      { name: 'style-loader', version: '4.0.0' }
+    ]
+  ]) {
+    assert.throws(() => classifyRuntimeComponents(components, invalid));
+  }
+});
+
+test('distribution fingerprints distinguish debug maps from deployable production files', async () => {
+  for (const development of [false, true]) {
+    // eslint-disable-next-line no-await-in-loop
+    const directory = await mkdtemp(join(tmpdir(), 'ytaf-dist-contract-'));
+    const expected = development
+      ? EXPECTED_DEVELOPMENT_FILES
+      : EXPECTED_APP_FILES;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(
+        expected.map(async (file) => {
+          await mkdir(dirname(join(directory, file)), { recursive: true });
+          await writeFile(join(directory, file), file);
+        })
+      );
+      // eslint-disable-next-line no-await-in-loop
+      const original = await hashDistDirectory(directory, development);
+      // eslint-disable-next-line no-await-in-loop
+      await assert.rejects(
+        hashDistDirectory(directory, !development),
+        /Unexpected distribution/
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await writeFile(
+        join(directory, 'runtime-components.json'),
+        'changed inventory'
+      );
+      assert.notEqual(
+        // eslint-disable-next-line no-await-in-loop
+        await hashDistDirectory(directory, development),
+        original
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await writeFile(
+        join(directory, 'unexpected.js'),
+        'unexpected executable'
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await assert.rejects(
+        hashDistDirectory(directory, development),
+        /Unexpected distribution/
+      );
+    } finally {
+      // eslint-disable-next-line no-await-in-loop
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });

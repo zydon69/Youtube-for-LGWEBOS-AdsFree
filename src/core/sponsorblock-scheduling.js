@@ -1,21 +1,27 @@
-const SEEK_EPSILON_SECONDS = 0.05;
+export const SEEK_EPSILON_SECONDS = 0.05;
 
 /**
  * @param {{ category: string, segment: [number, number] }[]} segments
  * @param {Set<string>} allowedCategories
  * @param {number} currentTime
+ * @param {number} [duration]
  */
 export function findNextSponsorSegment(
   segments,
   allowedCategories,
-  currentTime
+  currentTime,
+  duration = Infinity
 ) {
   if (!Number.isFinite(currentTime)) return null;
   return (
     segments.find(
       (candidate) =>
         allowedCategories.has(candidate.category) &&
-        candidate.segment[1] > currentTime + SEEK_EPSILON_SECONDS
+        currentTime <
+          (Number.isFinite(duration) && duration > 0
+            ? Math.min(candidate.segment[1], duration)
+            : candidate.segment[1]) -
+            SEEK_EPSILON_SECONDS
     ) ?? null
   );
 }

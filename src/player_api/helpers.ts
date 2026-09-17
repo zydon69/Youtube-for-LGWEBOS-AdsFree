@@ -1,5 +1,7 @@
+import { elementMatches } from '../core/dom-elements.ts';
+export { elementMatches } from '../core/dom-elements.ts';
 import { ActiveMediaResolver } from '../core/active-media-resolver.ts';
-import { pollUntil } from '../core/poll.js';
+import { startPolling } from '../core/poll.js';
 
 import type { ManagedYTPlayer } from './yt-api';
 
@@ -9,28 +11,6 @@ const REQUIRED_PLAYER_METHODS = [
   'getVideoData',
   'getPlayerStateObject'
 ] as const satisfies readonly (keyof ManagedYTPlayer)[];
-
-interface MatchableElement {
-  matches?: (selectors: string) => boolean;
-  webkitMatchesSelector?: (selectors: string) => boolean;
-  msMatchesSelector?: (selectors: string) => boolean;
-}
-
-/** Cross-realm selector matching for the Safari versions used by older TVs. */
-export function elementMatches(value: unknown, selectors: string) {
-  if (value === null || typeof value !== 'object') return false;
-  const candidate = value as MatchableElement;
-  const matcher =
-    candidate.matches ??
-    candidate.webkitMatchesSelector ??
-    candidate.msMatchesSelector;
-  if (typeof matcher !== 'function') return false;
-  try {
-    return Reflect.apply(matcher, value, [selectors]) === true;
-  } catch {
-    return false;
-  }
-}
 
 /** Runtime/cross-realm capability guard for YouTube's private player object. */
 export function isYTPlayer(value: unknown): value is ManagedYTPlayer {
@@ -68,29 +48,27 @@ export function findCapablePlayer(root: ParentNode = document) {
   );
 }
 
-/**
- * document.querySelector but waits for the Element to be added if it doesn't already exist.
- */
-/**
- * Manager-only lookup that ignores DOM placeholders until the complete private
- * player capability contract is available.
- */
-export async function getCapablePlayer(
+/** Lookup owns cancellation even on TV engines without AbortController. */
+export function startCapablePlayerLookup(
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
-): Promise<ManagedYTPlayer> {
-  const existing = findCapablePlayer();
-  if (existing) return existing;
-
+) {
   if (!document.body && !document.documentElement) {
     throw new Error(
       'Cannot observe the YouTube player before the document exists'
     );
   }
-  return pollUntil(() => findCapablePlayer(), {
+  return startPolling(() => findCapablePlayer(), {
     ...(options.signal ? { signal: options.signal } : {}),
     timeoutMs: options.timeoutMs ?? 24 * 60 * 60 * 1000,
     initialDelayMs: 25,
     maxDelayMs: 500,
     scheduler: window
   });
+}
+
+/** Promise adapter for callers that supply their own cancellation signal. */
+export async function getCapablePlayer(
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<ManagedYTPlayer> {
+  return startCapablePlayerLookup(options).promise;
 }

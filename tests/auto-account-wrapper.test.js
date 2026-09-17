@@ -21,7 +21,7 @@ function waitFor(condition, message) {
   });
 }
 
-test('account-selection wrapper installs lazily and follows configuration', async () => {
+test('account-selection bypasses only the first valid startup selector and never re-arms', async () => {
   const browser = new Window({ url: 'https://www.youtube.com/tv#/' });
   const restoreGlobals = installDOMGlobals(browser);
   const nativeCalls = [];
@@ -50,16 +50,41 @@ test('account-selection wrapper installs lazily and follows configuration', asyn
       () => instance.resolveCommand !== nativeResolveCommand,
       'account-selection hook installation timed out'
     );
+    const refusedCommands = [
+      { startAccountSelectorCommand: null },
+      { startAccountSelectorCommand: { nextEndpoint: {} } },
+      { startAccountSelectorCommand: { nextEndpoint: [] } },
+      {
+        startAccountSelectorCommand: { nextEndpoint: { browseEndpoint: {} } },
+        onIdentityChanged: {}
+      }
+    ];
+    for (const command of refusedCommands) {
+      instance.resolveCommand(command);
+      assert.equal(nativeCalls.pop(), command);
+    }
     instance.resolveCommand({
       startAccountSelectorCommand: {
         selectAccountEndpoint: { accountItem: { accountName: 'first' } },
         nextEndpoint: { browseEndpoint: { browseId: 'home' } }
       },
-      trackingParams: 'kept'
+      trackingParams: 'kept',
+      commandMetadata: { extra: 'retained', webCommandMetadata: { url: '/tv' } }
     });
     const selected = nativeCalls.pop();
     assert.equal('startAccountSelectorCommand' in selected, false);
     assert.equal(selected.trackingParams, 'kept');
+    assert.deepEqual(selected.commandMetadata, {
+      extra: 'retained',
+      webCommandMetadata: { url: '/tv', clientAction: true }
+    });
+    const manual = {
+      startAccountSelectorCommand: {
+        nextEndpoint: { browseEndpoint: { browseId: 'manual' } }
+      }
+    };
+    instance.resolveCommand(manual);
+    assert.equal(nativeCalls.pop(), manual);
     assert.deepEqual(
       selected.onIdentityChanged.identityActionContext.nextEndpoint,
       { browseEndpoint: { browseId: 'home' } }
@@ -82,10 +107,7 @@ test('account-selection wrapper installs lazily and follows configuration', asyn
       }
     };
     instance.resolveCommand(reenabledCommand);
-    assert.deepEqual(
-      nativeCalls.pop().onIdentityChanged.identityActionContext.nextEndpoint,
-      { browseEndpoint: { browseId: 'reenabled' } }
-    );
+    assert.equal(nativeCalls.pop(), reenabledCommand);
 
     feature.dispose();
     feature.dispose();
@@ -98,9 +120,70 @@ test('account-selection wrapper installs lazily and follows configuration', asyn
     };
     instance.resolveCommand(disposedCommand);
     assert.equal(nativeCalls.pop(), disposedCommand);
+    feature.installAutoAccountSelectFeature();
+    instance.resolveCommand(disposedCommand);
+    assert.equal(nativeCalls.pop(), disposedCommand);
   } finally {
     feature?.dispose();
     appAPI?.dispose();
+    restoreGlobals();
+    await browser.close();
+  }
+});
+
+test('account startup installation completes without a target and disposal cancels late effects', async () => {
+  const browser = new Window({ url: 'https://www.youtube.com/tv#/' });
+  const restoreGlobals = installDOMGlobals(browser);
+  let synchronize;
+  const originalInterval = browser.setInterval;
+  browser.setInterval = (callback) => {
+    synchronize = callback;
+    return 1;
+  };
+  let feature;
+  let appAPI;
+  try {
+    const config = await import('../src/config.js');
+    config.configWrite('autoAccountSelect', true);
+    feature = await import('../src/auto-account-select.ts?late-startup');
+    appAPI = await import('../src/app_api/index.ts');
+    assert.equal(feature.installAutoAccountSelectFeature(), undefined);
+    assert.equal(typeof synchronize, 'function');
+    feature.dispose();
+    const calls = [];
+    function Command() {}
+    Command.instance = {
+      resolveCommand(payload) {
+        calls.push(payload);
+      }
+    };
+    browser._yttv = { Command };
+    synchronize();
+    const command = {
+      startAccountSelectorCommand: {
+        nextEndpoint: { browseEndpoint: { browseId: 'late' } }
+      }
+    };
+    Command.instance.resolveCommand(command);
+    assert.equal(calls.pop(), command);
+    feature.installAutoAccountSelectFeature();
+    config.configWrite('autoAccountSelect', false);
+    Command.instance.resolveCommand(command);
+    assert.equal(calls.pop(), command);
+    config.configWrite('autoAccountSelect', true);
+    Command.instance.resolveCommand(command);
+    assert.equal('startAccountSelectorCommand' in calls.pop(), false);
+    Command.instance.resolveCommand(command);
+    assert.equal(calls.pop(), command);
+    appAPI.dispose();
+    const capturedSynchronization = synchronize;
+    capturedSynchronization();
+    Command.instance.resolveCommand(command);
+    assert.equal(calls.pop(), command);
+  } finally {
+    feature?.dispose();
+    appAPI?.dispose();
+    browser.setInterval = originalInterval;
     restoreGlobals();
     await browser.close();
   }

@@ -1,7 +1,5 @@
 // Typed compatibility boundary for YouTube TV's private resolveCommand API.
 
-import { pollUntil } from '../core/poll.js';
-
 declare global {
   interface Window {
     _yttv?: Record<string, unknown>;
@@ -21,11 +19,6 @@ export interface ResolveCommandHook {
   ): ResolveCommandPayload | ResolveCommandPayload[];
 }
 
-interface RegistryOptions {
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
 interface HookTarget {
   name: string;
   instance: Record<string, unknown> & { resolveCommand: ResolveCommand };
@@ -36,23 +29,10 @@ interface BoundTarget extends HookTarget {
   wrapper: ResolveCommand;
 }
 
-interface PendingRegistry {
-  controller: AbortController | null;
-  promise: Promise<ResolveCommandRegistry>;
-}
-
 let registry: ResolveCommandRegistry | null = null;
-let pendingRegistry: PendingRegistry | null = null;
-let registryGeneration = 0;
 const MAX_YTTV_ENTRIES_TO_INSPECT = 256;
 const MAX_RESOLVE_COMMAND_TARGETS = 8;
 const MAX_TRANSFORMED_COMMANDS = 32;
-
-function createAbortError(message: string) {
-  const error = new Error(message);
-  error.name = 'AbortError';
-  return error;
-}
 
 function isRecord(value: unknown): value is ResolveCommandPayload {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -115,41 +95,6 @@ function findHookTargets(preferredNames: readonly string[] = []) {
   return targets;
 }
 
-function withCallerControls<T>(
-  promise: Promise<T>,
-  { signal, timeoutMs }: RegistryOptions
-) {
-  if (signal?.aborted)
-    return Promise.reject(createAbortError('Operation aborted'));
-  if (
-    timeoutMs !== undefined &&
-    (!Number.isFinite(timeoutMs) || timeoutMs < 0)
-  ) {
-    return Promise.reject(
-      new RangeError('timeoutMs must be a finite non-negative number')
-    );
-  }
-  if (!signal && timeoutMs === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(createAbortError('Operation aborted'));
-    const timeoutToken =
-      timeoutMs === undefined
-        ? null
-        : window.setTimeout(
-            () =>
-              reject(
-                new Error(`ResolveCommand timed out after ${timeoutMs}ms`)
-              ),
-            timeoutMs
-          );
-    signal?.addEventListener('abort', abort, { once: true });
-    promise.then(resolve, reject).finally(() => {
-      signal?.removeEventListener('abort', abort);
-      if (timeoutToken !== null) window.clearTimeout(timeoutToken);
-    });
-  });
-}
-
 export class ResolveCommandRegistry {
   #targets = new Map<HookTarget['instance'], BoundTarget>();
   #preferredNames: string[] = [];
@@ -157,12 +102,9 @@ export class ResolveCommandRegistry {
   #synchronizationToken: number | null = null;
   #destroyed = false;
 
-  private constructor(targets: HookTarget[], allowDeferred = false) {
+  private constructor(targets: HookTarget[]) {
     try {
       for (const target of targets) this.bindTarget(target);
-      if (this.#targets.size === 0 && !allowDeferred) {
-        throw new Error('No writable resolveCommand target was found');
-      }
       this.#synchronizationToken = window.setInterval(
         () => this.synchronizeTargets(),
         2_000
@@ -349,7 +291,7 @@ export class ResolveCommandRegistry {
     return true;
   }
 
-  private synchronizeTargets() {
+  synchronizeTargets() {
     if (this.#destroyed) return;
     const discovered = findHookTargets(this.#preferredNames);
     const activeInstances = new Set(
@@ -373,75 +315,16 @@ export class ResolveCommandRegistry {
     }
   }
 
-  private static waitForHookTargets(
-    generation: number,
-    { signal, timeoutMs = 24 * 60 * 60 * 1000 }: RegistryOptions = {}
-  ) {
-    return pollUntil(
-      () => {
-        if (generation !== registryGeneration) {
-          throw createAbortError('ResolveCommand initialization cancelled');
-        }
-        const targets = findHookTargets();
-        return targets.length > 0 ? targets : null;
-      },
-      {
-        ...(signal ? { signal } : {}),
-        timeoutMs,
-        initialDelayMs: 50,
-        maxDelayMs: 1_000,
-        scheduler: window
-      }
-    ) as Promise<HookTarget[]>;
-  }
-
-  static async getInstance(options: RegistryOptions = {}) {
-    if (options.signal?.aborted) {
-      throw createAbortError('Operation aborted');
-    }
-    if (registry) {
-      registry.synchronizeTargets();
-      return registry;
-    }
-
-    if (!pendingRegistry) {
-      const generation = registryGeneration;
-      const controller =
-        typeof AbortController === 'function' ? new AbortController() : null;
-      const pending = this.waitForHookTargets(generation, {
-        ...(controller ? { signal: controller.signal } : {})
-      })
-        .then((targets) => {
-          if (generation !== registryGeneration) {
-            throw createAbortError('ResolveCommand initialization cancelled');
-          }
-          registry ??= new ResolveCommandRegistry(targets);
-          return registry;
-        })
-        .finally(() => {
-          if (pendingRegistry?.promise === pending) pendingRegistry = null;
-        });
-      pendingRegistry = { controller, promise: pending };
-    }
-
-    return withCallerControls(pendingRegistry.promise, options);
-  }
-
   static getDeferredInstance() {
     if (registry) {
       registry.synchronizeTargets();
       return registry;
     }
-    pendingRegistry?.controller?.abort();
-    pendingRegistry = null;
-    registry = new ResolveCommandRegistry(findHookTargets(), true);
+    registry = new ResolveCommandRegistry(findHookTargets());
     return registry;
   }
 
   static destroyInstance() {
-    registryGeneration++;
-    pendingRegistry?.controller?.abort();
-    pendingRegistry = null;
     registry?.destroy();
     registry = null;
   }

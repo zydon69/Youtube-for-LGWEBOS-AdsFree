@@ -1,3 +1,4 @@
+import { RuntimeInventoryPlugin } from './tools/runtime-inventory-plugin.js';
 import CopyPlugin from 'copy-webpack-plugin';
 import { TransformAsyncModulesPlugin } from 'transform-async-modules-webpack-plugin';
 import TerserPlugin from 'terser-webpack-plugin';
@@ -30,7 +31,7 @@ const makeConfig = (env = {}, argv) => [
      * NOTE: Builds with devtool = 'eval' contain very big eval chunks which seem
      * to cause segfaults (at least) on nodeJS v0.12.2 used on webOS 3.x.
      */
-    devtool: argv.mode === 'development' ? 'inline-source-map' : false,
+    devtool: argv.mode === 'development' ? 'source-map' : false,
 
     output: {
       clean: true,
@@ -51,8 +52,8 @@ const makeConfig = (env = {}, argv) => [
 
     performance: {
       hints: 'error',
-      maxAssetSize: 350 * 1024,
-      maxEntrypointSize: 350 * 1024
+      maxAssetSize: (argv.mode === 'development' ? 2048 : 350) * 1024,
+      maxEntrypointSize: (argv.mode === 'development' ? 2048 : 350) * 1024
     },
 
     entry: {
@@ -103,6 +104,7 @@ const makeConfig = (env = {}, argv) => [
     },
 
     plugins: [
+      new RuntimeInventoryPlugin(),
       new CopyPlugin({
         patterns: [
           {

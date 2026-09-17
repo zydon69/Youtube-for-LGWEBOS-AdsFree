@@ -8,8 +8,13 @@ try {
 } catch (error) {
   const status =
     error && typeof error === 'object' && 'status' in error
-      ? Number(error.status)
-      : 1;
-  if (!Number.isInteger(status)) console.error('[toolchain]', error);
-  process.exitCode = Number.isInteger(status) ? status : 1;
+      ? error.status
+      : undefined;
+  const hasFailureStatus =
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status > 0 &&
+    status <= 255;
+  if (!hasFailureStatus) console.error('[toolchain]', error);
+  process.exitCode = hasFailureStatus ? status : 1;
 }

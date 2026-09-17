@@ -143,6 +143,8 @@ test('player selection and active video use the same visible-media resolver', as
 
   try {
     assert.equal(findCapablePlayer(window.document), foregroundPlayer);
+    assert.equal(manager.player, backgroundPlayer);
+    manager.synchronizePlayer();
     assert.equal(manager.player, foregroundPlayer);
     assert.equal(manager.activeVideo, foregroundVideo);
   } finally {
@@ -229,3 +231,115 @@ test('player manager construction rolls back when scheduling fails', async () =>
     await window.close();
   }
 });
+
+test('explicit root bounds exclude unrelated media, even when its player is empty', async () => {
+  const { ActiveMediaResolver } =
+    await import('../src/core/active-media-resolver.ts');
+  const window = new Window();
+  try {
+    const empty = window.document.createElement('div');
+    const unrelated = window.document.createElement('video');
+    window.document.body.append(empty, unrelated);
+    const resolver = new ActiveMediaResolver(window.document);
+    assert.equal(resolver.resolveVideo(empty), null);
+    assert.equal(resolver.resolveVideo(), unrelated);
+    empty.appendChild(unrelated);
+    assert.equal(resolver.resolveVideo(empty), unrelated);
+    unrelated.hidden = true;
+    assert.equal(resolver.resolveVideo(empty), null);
+  } finally {
+    await window.close();
+  }
+});
+
+test('presentation-hidden active media retains priority over larger previews until restored', async () => {
+  const { ActiveMediaResolver, setMediaPresentationHidden } =
+    await import('../src/core/active-media-resolver.ts');
+  const window = new Window();
+  try {
+    const main = window.document.createElement('video');
+    const preview = window.document.createElement('video');
+    setRect(main, { left: 0, top: 0, width: 320, height: 180 });
+    setRect(preview, { left: 0, top: 0, width: 640, height: 360 });
+    window.document.body.append(main, preview);
+    const resolver = new ActiveMediaResolver(window.document);
+    Object.defineProperty(main, 'paused', { value: false, configurable: true });
+    setMediaPresentationHidden(main, true);
+    main.style.visibility = 'hidden';
+    assert.equal(resolver.resolveVideo(), main);
+    main.remove();
+    assert.equal(resolver.resolveVideo(), preview);
+    window.document.body.appendChild(main);
+    assert.equal(resolver.resolveVideo(), main);
+    main.style.visibility = '';
+    setMediaPresentationHidden(main, false);
+    assert.equal(resolver.resolveVideo(), preview);
+  } finally {
+    await window.close();
+  }
+});
+
+test('reentrant state observation emits each video identity only once', async () => {
+  const window = new Window();
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const player = window.document.createElement('div');
+  player.className = 'html5-video-player';
+  const controls = addPlayerCapabilities(player);
+  window.document.body.appendChild(player);
+  const manager = new PlayerManager(player);
+  const ids = [];
+  manager.addEventListener('newVideo', (event) => {
+    ids.push(event.detail);
+    controls.emitState();
+  });
+  try {
+    controls.emitState();
+    controls.setVideoID('video-b');
+    controls.emitState();
+    assert.deepEqual(ids, ['video-a', 'video-b']);
+  } finally {
+    manager.destroy();
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    await window.close();
+  }
+});
+
+for (const concealment of [
+  'own-hidden',
+  'own-display',
+  'own-collapse',
+  'parent-hidden',
+  'parent-display'
+]) {
+  test(`screen-off ownership does not override host concealment ${concealment}`, async () => {
+    const { ActiveMediaResolver, setMediaPresentationHidden } =
+      await import('../src/core/active-media-resolver.ts');
+    const window = new Window();
+    try {
+      const root = window.document.createElement('div');
+      const main = window.document.createElement('video');
+      const replacement = window.document.createElement('video');
+      Object.defineProperty(main, 'paused', { value: false });
+      setRect(main, { left: 0, top: 0, width: 640, height: 360 });
+      setRect(replacement, { left: 0, top: 0, width: 320, height: 180 });
+      root.appendChild(main);
+      window.document.body.append(root, replacement);
+      const resolver = new ActiveMediaResolver(window.document);
+      setMediaPresentationHidden(main, true);
+      main.style.visibility = 'hidden';
+      assert.equal(resolver.resolveVideo(), main);
+      if (concealment === 'own-hidden') main.hidden = true;
+      if (concealment === 'own-display') main.style.display = 'none';
+      if (concealment === 'own-collapse') main.style.visibility = 'collapse';
+      if (concealment === 'parent-hidden') root.hidden = true;
+      if (concealment === 'parent-display') root.style.display = 'none';
+      assert.equal(resolver.resolveVideo() === replacement, true);
+    } finally {
+      await window.close();
+    }
+  });
+}

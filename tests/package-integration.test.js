@@ -18,11 +18,23 @@ test(
     const directory = await mkdtemp(join(tmpdir(), 'ytaf-package-test-'));
     const sbomPath = join(directory, 'sbom.cdx.json');
     try {
-      await generateSbom({
+      const sbom = await generateSbom({
         mode: 'development',
         outputPath: sbomPath,
         quiet: true
       });
+      for (const name of ['style-loader', 'css-loader']) {
+        assert.equal(
+          sbom.components.find((component) => component.name === name)?.scope,
+          'required'
+        );
+      }
+      assert.equal(
+        sbom.components.some((component) =>
+          String(component['bom-ref']).startsWith('urn:ytaf:vendored:')
+        ),
+        false
+      );
       const result = await createPackage({
         mode: 'development',
         outputDirectory: directory,

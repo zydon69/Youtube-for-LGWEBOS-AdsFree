@@ -340,23 +340,6 @@ function validateSbom(value) {
   ) {
     throw new Error('SBOM does not contain the canonical scoped npm PURL');
   }
-  const vendored = components.filter((component) =>
-    String(component['bom-ref']).startsWith('urn:ytaf:vendored:')
-  );
-  if (
-    vendored.length !== 2 ||
-    vendored.some((component) => {
-      const properties = /** @type {Array<Record<string, unknown>>} */ (
-        Array.isArray(component.properties) ? component.properties : []
-      );
-      return (
-        properties.find((property) => property.name === 'ytaf:locally-modified')
-          ?.value !== 'true' || !component.pedigree?.ancestors?.length
-      );
-    })
-  ) {
-    throw new Error('SBOM vendored-code pedigree is incomplete');
-  }
 }
 
 /** @param {Map<string, Buffer>} dataFiles @param {Map<string, Buffer>} controlFiles @param {string} distDirectory */

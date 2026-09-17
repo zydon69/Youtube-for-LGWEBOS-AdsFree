@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { parse } from '@babel/parser';
 
-import { PROJECT_ROOT, sha256 } from './package-contract.js';
+import { PROJECT_ROOT } from './package-contract.js';
 
 const textExtensions = new Set([
   '.asc',
@@ -51,19 +51,6 @@ const expectedSourceSinks = new Map([
   ],
   ['src/utils.js', new Map([['navigation', 1]])]
 ]);
-const vendoredSourceContract = Object.freeze([
-  {
-    path: 'src/spatial-navigation-polyfill.js',
-    sha256: 'a45a26fdc3399542acb3ef7497dba7c190cca894cea857c46514e73a9e2bea15',
-    upstreamCommit: '183f0146b6741007e46fa64ab0950447defdf8af'
-  },
-  {
-    path: 'src/domrect-polyfill.js',
-    sha256: 'df8d563d2dd594f31142e4f27188c68c755449c01b1693760934061d10cc1606',
-    upstreamCommit: 'c25c30e4463bef60fba1213ecb697f3e3f253d7b'
-  }
-]);
-
 /** @param {string} name */
 export function isInspectableTextFile(name) {
   const lowerName = name.toLowerCase();
@@ -525,26 +512,9 @@ function readGitHistory() {
 }
 
 export async function runSecurityAudit() {
+  /** @type {string[]} */
   const failures = [];
   const origins = new Set();
-  const vendorDocumentation = await readFile(
-    join(PROJECT_ROOT, 'docs', 'vendor-patches.md'),
-    'utf8'
-  );
-  for (const vendor of vendoredSourceContract) {
-    // Sequential reads keep the reviewed vendor contract deterministic.
-    // eslint-disable-next-line no-await-in-loop
-    const actualHash = sha256(await readFile(join(PROJECT_ROOT, vendor.path)));
-    if (actualHash !== vendor.sha256) {
-      failures.push(`${vendor.path}: vendored source hash changed`);
-    }
-    if (
-      !vendorDocumentation.includes(vendor.sha256) ||
-      !vendorDocumentation.includes(vendor.upstreamCommit)
-    ) {
-      failures.push(`${vendor.path}: vendor documentation is stale`);
-    }
-  }
   for (const path of await listTextFiles(PROJECT_ROOT)) {
     // Sequential reads cap memory while scanning the complete working tree.
     // eslint-disable-next-line no-await-in-loop
@@ -589,7 +559,7 @@ export async function runSecurityAudit() {
     );
   }
   console.info(
-    `Security policy passed: ${origins.size} reviewed origins, exact source sink inventory, source/bundle/vendor scan and secret scan`
+    `Security policy passed: ${origins.size} reviewed origins, exact source sink inventory, source/bundle scan and secret scan`
   );
 }
 

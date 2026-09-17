@@ -208,7 +208,13 @@ function stringifyWithHooks(
     stringifyHookDepth--;
   }
   if (stringifyHookDepth > 0) return serialized;
-  if (serialized === undefined || hasActiveReplacer(replacer))
+  // Boxed indentation may invoke user coercion. Reusing it for transformed
+  // output would evaluate that code twice, so preserve its native result.
+  if (
+    serialized === undefined ||
+    hasActiveReplacer(replacer) ||
+    (space !== null && typeof space === 'object')
+  )
     return serialized;
   if (serialized.length > MAX_JSON_TRANSFORM_BYTES) {
     console.warn('[json] Serialized payload exceeds transform byte limit');
@@ -224,7 +230,14 @@ function stringifyWithHooks(
   );
   if (registrations.length === 0) return serialized;
 
-  const serializableValue = Reflect.apply(parseDelegate, target, [serialized]);
+  let serializableValue: unknown;
+  try {
+    serializableValue = Reflect.apply(parseDelegate, target, [serialized]);
+  } catch {
+    // Native stringify also supports indentation such as "--", whose output
+    // is deliberately not JSON. It remains a valid native serialization.
+    return serialized;
+  }
   const transformed = applyTransformers(
     serializableValue,
     registrations,
@@ -232,7 +245,24 @@ function stringifyWithHooks(
   );
   stringifyHookDepth++;
   try {
-    return Reflect.apply(delegate, target, [transformed, undefined, space]);
+    const result = Reflect.apply(delegate, target, [
+      transformed,
+      undefined,
+      space
+    ]);
+    if (
+      typeof result === 'string' &&
+      result.length > MAX_JSON_TRANSFORM_BYTES
+    ) {
+      console.warn('[json] Transformed payload exceeds transform byte limit');
+      return serialized;
+    }
+    return result;
+  } catch (error) {
+    // A transform must not introduce an exception after native serialization
+    // succeeded (for example by returning a cycle or BigInt).
+    console.error('[json] Unable to serialize transformed payload', error);
+    return serialized;
   } finally {
     stringifyHookDepth--;
   }

@@ -123,7 +123,7 @@ const configs = [
 
   {
     // `ignores` field must be in the very bottom config.
-    ignores: ['dist/**/*', '**/*-polyfill.*']
+    ignores: ['dist/**/*']
   }
 ] as const satisfies Linter.Config[];
 

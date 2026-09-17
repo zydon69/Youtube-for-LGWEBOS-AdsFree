@@ -166,7 +166,7 @@ test('resolveCommand registry composes hooks and rebinds replaced instances', as
   };
 
   const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
-  const registry = await ResolveCommandRegistry.getInstance({ timeoutMs: 100 });
+  const registry = ResolveCommandRegistry.getDeferredInstance();
   registry.setHook('first', (payload) => ({ ...payload, firstHandled: true }));
   registry.setHook('second', (payload) => ({
     ...payload,
@@ -191,7 +191,7 @@ test('resolveCommand registry composes hooks and rebinds replaced instances', as
   };
   const secondOriginal = secondInstance.resolveCommand;
   targetConstructor.instance = secondInstance;
-  await ResolveCommandRegistry.getInstance();
+  registry.synchronizeTargets();
   assert.equal(firstInstance.resolveCommand, firstOriginal);
   targetConstructor.instance.resolveCommand({ first: {} });
   assert.deepEqual(secondCalls, [{ first: {}, firstHandled: true }]);
@@ -218,7 +218,7 @@ test('resolveCommand rebind preserves a host wrapper that captured the hook', as
   };
 
   const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
-  const registry = await ResolveCommandRegistry.getInstance({ timeoutMs: 100 });
+  const registry = ResolveCommandRegistry.getDeferredInstance();
   registry.setHook('wrapped', (payload) => ({ ...payload, transformed: true }));
   const capturedHook = instance.resolveCommand;
   let hostCalls = 0;
@@ -227,7 +227,7 @@ test('resolveCommand rebind preserves a host wrapper that captured the hook', as
     return Reflect.apply(capturedHook, this, [payload, extra]);
   };
   instance.resolveCommand = hostWrapper;
-  await ResolveCommandRegistry.getInstance();
+  registry.synchronizeTargets();
 
   instance.resolveCommand({ wrapped: true });
   assert.equal(hostCalls, 1);
@@ -237,33 +237,6 @@ test('resolveCommand rebind preserves a host wrapper that captured the hook', as
   assert.equal(instance.resolveCommand, hostWrapper);
   instance.resolveCommand({ wrapped: true });
   assert.deepEqual(calls.at(-1), { wrapped: true });
-});
-
-test('resolveCommand callers have independent timeouts', async () => {
-  function targetConstructor() {}
-  globalThis.window = {
-    _yttv: {},
-    setInterval,
-    clearInterval,
-    setTimeout,
-    clearTimeout
-  };
-  const { ResolveCommandRegistry } = await import('../src/app_api/index.ts');
-  const shortWait = ResolveCommandRegistry.getInstance({ timeoutMs: 30 });
-  const longWait = ResolveCommandRegistry.getInstance({ timeoutMs: 300 });
-  setTimeout(() => {
-    targetConstructor.instance = {
-      resolveCommand(payload) {
-        return payload;
-      }
-    };
-    globalThis.window._yttv.targetConstructor = targetConstructor;
-  }, 80);
-
-  await assert.rejects(shortWait, /timed out after 30ms/);
-  const registry = await longWait;
-  assert.ok(registry instanceof ResolveCommandRegistry);
-  registry.destroy();
 });
 
 test('deferred resolveCommand hooks bind targets that appear after bootstrap', async () => {

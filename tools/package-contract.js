@@ -71,6 +71,7 @@ export const EXPECTED_APP_FILES = Object.freeze([
   'imageForRecents.png',
   'index.html',
   'index.js',
+  'runtime-components.json',
   'largeIcon.png',
   'LICENSE',
   'mediumLargeIcon.png',
@@ -79,6 +80,12 @@ export const EXPECTED_APP_FILES = Object.freeze([
   'THIRD_PARTY_NOTICES.md',
   'webOSUserScripts/userScript.js',
   'webOSUserScripts/userScript.js.LICENSE.txt'
+]);
+
+export const EXPECTED_DEVELOPMENT_FILES = Object.freeze([
+  ...EXPECTED_APP_FILES.filter((file) => !file.endsWith('.LICENSE.txt')),
+  'index.js.map',
+  'webOSUserScripts/userScript.js.map'
 ]);
 
 export const EXPECTED_AR_MEMBERS = Object.freeze([

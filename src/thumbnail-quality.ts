@@ -329,13 +329,14 @@ const styleObserver = new MutationObserver((mutations) => {
 });
 
 function observeThumbnail(element: HTMLElement) {
-  if (observedThumbnails.has(element)) return;
-  observedThumbnails.add(element);
-  styleObserver.observe(element, {
-    attributes: true,
-    attributeFilter: ['style'],
-    attributeOldValue: true
-  });
+  if (!observedThumbnails.has(element)) {
+    observedThumbnails.add(element);
+    styleObserver.observe(element, {
+      attributes: true,
+      attributeFilter: ['style'],
+      attributeOldValue: true
+    });
+  }
   if (element.style.backgroundImage) queueUpgrade(element);
 }
 

@@ -34,10 +34,8 @@ function makeConfig(api) {
         {
           method: 'usage-pure',
           version: corejspureVersion,
-          /** TODO: Remove after core rewrite.
-           * The way pure polyfills work completely breaks wrapper chaining.
-           * The new core will only wrap each global once, which will completely side-step the issue.
-           */
+          // Preserve the global JSON boundary: application transforms register
+          // against that single delegate instead of a private pure parse copy.
           exclude: ['es.json.parse', 'esnext.json.parse']
         }
       ],

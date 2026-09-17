@@ -6,32 +6,27 @@ import {
 } from './config';
 import { transformAccountSelectorCommand } from './core/account-selection';
 
-const hook: ResolveCommandHook = (payload) =>
-  configRead('autoAccountSelect')
-    ? transformAccountSelectorCommand(payload)
-    : payload;
+let startupSelectionConsumed = false;
+
+const hook: ResolveCommandHook = (payload) => {
+  if (startupSelectionConsumed || !configRead('autoAccountSelect'))
+    return payload;
+  const transformed = transformAccountSelectorCommand(payload);
+  if (transformed !== payload) startupSelectionConsumed = true;
+  return transformed;
+};
 
 let installedRegistry: ResolveCommandRegistry | null = null;
-let installationGeneration = 0;
 let featureInstalled = false;
 
-export async function installAutoAccountSelect() {
-  const generation = ++installationGeneration;
-  if (installedRegistry) return;
-
-  const registry = await ResolveCommandRegistry.getInstance();
-  if (
-    generation !== installationGeneration ||
-    !configRead('autoAccountSelect')
-  ) {
-    return;
-  }
+export function installAutoAccountSelect() {
+  if (installedRegistry || !configRead('autoAccountSelect')) return;
+  const registry = ResolveCommandRegistry.getDeferredInstance();
   registry.setHook('startAccountSelectorCommand', hook);
   installedRegistry = registry;
 }
 
 export function disposeAutoAccountSelect() {
-  installationGeneration++;
   installedRegistry?.removeHook('startAccountSelectorCommand');
   installedRegistry = null;
 }
@@ -41,21 +36,19 @@ function synchronizeAutoAccountSelect(enabled: boolean) {
     disposeAutoAccountSelect();
     return;
   }
-  void installAutoAccountSelect().catch((error) => {
-    console.warn('[auto-account-select] Feature unavailable', error);
-  });
+  installAutoAccountSelect();
 }
 
 const handleConfigChange = (event: CustomEvent<{ newValue: boolean }>) => {
   synchronizeAutoAccountSelect(event.detail.newValue);
 };
 
-export async function installAutoAccountSelectFeature() {
+export function installAutoAccountSelectFeature() {
   if (featureInstalled) return;
   configAddChangeListener('autoAccountSelect', handleConfigChange);
   featureInstalled = true;
   try {
-    if (configRead('autoAccountSelect')) await installAutoAccountSelect();
+    if (configRead('autoAccountSelect')) installAutoAccountSelect();
   } catch (error) {
     dispose();
     throw error;
@@ -63,7 +56,6 @@ export async function installAutoAccountSelectFeature() {
 }
 
 export function dispose() {
-  if (!featureInstalled) return;
   featureInstalled = false;
   configRemoveChangeListener('autoAccountSelect', handleConfigChange);
   disposeAutoAccountSelect();

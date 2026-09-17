@@ -1,6 +1,10 @@
 import { CustomEventTarget, TypedCustomEvent } from '../custom-event-target.ts';
 import { resolveActiveVideo } from '../core/active-media-resolver.ts';
-import { findCapablePlayer, getCapablePlayer, isYTPlayer } from './helpers.ts';
+import {
+  findCapablePlayer,
+  startCapablePlayerLookup,
+  isYTPlayer
+} from './helpers.ts';
 import type {
   PlayerStateKeys,
   PlayerStateObject,
@@ -86,8 +90,8 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
       if (!currentVideoID) {
         this.#lastVideoID = null;
       } else if (this.#lastVideoID !== currentVideoID) {
-        this.#handleNewVideo(currentVideoID);
         this.#lastVideoID = currentVideoID;
+        this.#handleNewVideo(currentVideoID);
         startedNewVideo = true;
       }
 
@@ -113,7 +117,7 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
     try {
       player.addEventListener('onStateChange', this.#handlePlayerStateChange);
       this.#synchronizationToken = window.setInterval(
-        () => this.#synchronizePlayer(),
+        () => this.synchronizePlayer(),
         2_000
       );
     } catch (error) {
@@ -132,7 +136,7 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
     }
   }
 
-  #synchronizePlayer() {
+  synchronizePlayer() {
     if (this.#destroyed) return;
     const candidate = findCapablePlayer();
     if (!candidate || candidate === this.#player) return;
@@ -197,7 +201,6 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
   }
 
   get player(): ManagedYTPlayer {
-    this.#synchronizePlayer();
     return this.#player;
   }
 
@@ -235,19 +238,17 @@ export class PlayerManager extends CustomEventTarget<EventMap> {
 
 let instance: PlayerManager | null = null;
 let instancePromise: Promise<PlayerManager> | null = null;
-let initializationController: AbortController | null = null;
+let initializationLookup: ReturnType<typeof startCapablePlayerLookup> | null =
+  null;
 let instanceGeneration = 0;
 
 export async function getPlayerManager(): Promise<PlayerManager> {
   if (instance) return instance;
   if (!instancePromise) {
     const generation = instanceGeneration;
-    const controller =
-      typeof AbortController === 'function' ? new AbortController() : null;
-    initializationController = controller;
-    const pending = getCapablePlayer(
-      controller ? { signal: controller.signal } : {}
-    )
+    const lookup = startCapablePlayerLookup();
+    initializationLookup = lookup;
+    const pending = lookup.promise
       .then((player) => {
         if (generation !== instanceGeneration) {
           const error = new Error('Player manager initialization cancelled');
@@ -259,8 +260,8 @@ export async function getPlayerManager(): Promise<PlayerManager> {
       })
       .finally(() => {
         if (instancePromise === pending) instancePromise = null;
-        if (initializationController === controller) {
-          initializationController = null;
+        if (initializationLookup === lookup) {
+          initializationLookup = null;
         }
       });
     instancePromise = pending;
@@ -270,8 +271,8 @@ export async function getPlayerManager(): Promise<PlayerManager> {
 
 export function destroyPlayerManager() {
   instanceGeneration++;
-  initializationController?.abort();
-  initializationController = null;
+  initializationLookup?.cancel();
+  initializationLookup = null;
   instancePromise = null;
   instance?.destroy();
   instance = null;

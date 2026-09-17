@@ -6,7 +6,6 @@ import {
   acquireTransactionalOwnership,
   InlineStyleOwner
 } from '../src/core/inline-style-owner.js';
-import { waitForChildAdd } from '../src/utils.js';
 
 test('owned state rolls back if its observer subscription fails', () => {
   let visibleState = false;
@@ -49,46 +48,6 @@ test('inline ownership restores the latest intermediate host value', async () =>
   await browser.close();
 });
 
-test('DOM waiting rejects predicate failures and disconnects exactly once', async () => {
-  const previousObserver = globalThis.MutationObserver;
-  let observerCallback;
-  let disconnectCalls = 0;
-  let predicateCalls = 0;
-  globalThis.MutationObserver = class {
-    constructor(callback) {
-      observerCallback = callback;
-    }
-
-    observe() {}
-
-    disconnect() {
-      disconnectCalls++;
-    }
-  };
-
-  try {
-    const parent = { childNodes: [] };
-    const target = { childNodes: [], failPredicate: true };
-    const pending = waitForChildAdd(
-      parent,
-      (node) => {
-        predicateCalls++;
-        if (node.failPredicate) throw new Error('predicate failed');
-        return false;
-      },
-      { timeoutMs: 100 }
-    );
-    observerCallback([{ type: 'childList', addedNodes: [target] }]);
-    await assert.rejects(pending, /predicate failed/);
-    assert.equal(disconnectCalls, 1);
-    const callsAfterFailure = predicateCalls;
-    observerCallback([{ type: 'childList', addedNodes: [target] }]);
-    assert.equal(predicateCalls, callsAfterFailure);
-  } finally {
-    globalThis.MutationObserver = previousObserver;
-  }
-});
-
 test('DOM mutation delivery is bounded and survives body replacement', async () => {
   const previous = {
     window: globalThis.window,
@@ -128,34 +87,6 @@ test('DOM mutation delivery is bounded and survives body replacement', async () 
     globalThis.window = previous.window;
     globalThis.document = previous.document;
     globalThis.MutationObserver = previous.MutationObserver;
-  }
-});
-
-test('legacy DOMRect converts setters and exposes modern helpers', async () => {
-  const previousSelf = globalThis.self;
-  const legacyGlobal = {};
-  globalThis.self = legacyGlobal;
-  try {
-    await import(`../src/domrect-polyfill.js?test=${Date.now()}`);
-    const Rect = legacyGlobal.DOMRect;
-    const rect = new Rect('1', '2', '3', '4');
-    rect.x = '5';
-    rect.width = '-2';
-    assert.equal(rect.x, 5);
-    assert.equal(rect.width, -2);
-    assert.equal(rect.left, 3);
-    assert.deepEqual(Rect.fromRect({ x: '7', height: '8' }).toJSON(), {
-      x: 7,
-      y: 0,
-      width: 0,
-      height: 8,
-      top: 0,
-      right: 7,
-      bottom: 8,
-      left: 7
-    });
-  } finally {
-    globalThis.self = previousSelf;
   }
 });
 

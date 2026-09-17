@@ -6,7 +6,10 @@
 isolated bootstrap loads infrastructure first, then explicitly calls each
 feature installer. An installer is successful only after it has acquired its
 listeners, hooks and owned DOM state; it returns a disposer through the
-bootstrap. Shutdown occurs in reverse order on a non-bfcache `pagehide`.
+bootstrap. Waiting for a player is deferred and never delays unrelated
+installers. The command registry can be installed before any host target exists;
+it synchronizes targets through one registry without a second waiting path.
+Shutdown occurs in reverse order on a non-bfcache `pagehide`.
 
 Global JSON, fetch and YouTube `resolveCommand` hooks use immutable binding
 generations. A host wrapper that captured an older generation therefore
@@ -22,6 +25,31 @@ registered by name and must be bounded, shape-gated and reversible.
   in `tools/security-audit.js` and the runtime's exact-origin validation.
 - SponsorBlock is opt-in and is disabled when the available fetch transport
   cannot enforce its redirect/referrer contract.
+
+## Media and operations
+
+The active-media resolver is the only media selection authority. An explicit
+player root is a strict boundary: an empty root never borrows another video's
+media. Screen-hidden presentation is tracked explicitly and cannot override a
+host-hidden or disconnected player. SponsorBlock correlates the player, media,
+source and confirmed video ID before each seek, and shares one end tolerance
+between scheduling and confirmation.
+
+Player getters have no synchronization side effects. Callers explicitly refresh
+the manager, then read a coherent player/video snapshot. Quality operations own
+their timers individually; synchronous host events and callbacks delivered after
+cancellation cannot clean up or confirm another operation. Each video receives
+an explicit range write, even if its observed quality already equals its maximum.
+
+## Settings navigation and persistence
+
+Settings focus moves locally within the dialog using current focus and geometry.
+The application installs no global spatial-navigation API, DOM prototype methods
+or DOMRect replacement. One DOM matching adapter handles browser differences.
+Configuration migration and PREF cookie scope migration normalize persisted data
+at their boundaries; there are no competing feature implementations for old data.
+Automatic account selection consumes only the first valid startup command in a
+document session, preserving later manual account selection.
 
 ## Dependency direction
 

@@ -52,7 +52,7 @@ test('UI owns modal and screen-hidden state only for its active lifecycle', asyn
       browser.document.body.classList.contains('app-quality-root'),
       false
     );
-    assert.equal(browser.__spatialNavigation__.keyMode, 'NONE');
+    assert.equal(browser.__spatialNavigation__.keyMode, 'ARROW');
     const panel = browser.document.querySelector('.ytaf-ui-container');
     assert.ok(panel instanceof browser.HTMLElement);
     assert.equal(panel.getAttribute('role'), 'dialog');
